@@ -3,7 +3,8 @@
     "allow": [
       "Bash(git --version)",
       "Bash(gh --version)",
-      "Bash(gh auth *)"
+      "Bash(gh auth *)",
+      "Bash(GCM_INTERACTIVE=never GIT_TERMINAL_PROMPT=0 sh -c 'printf \"protocol=https\\\\nhost=github.com\\\\n\\\\n\" | git credential fill 2>&1')"
     ]
   }
 }
