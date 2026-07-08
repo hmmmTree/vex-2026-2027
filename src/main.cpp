@@ -12,6 +12,11 @@ pros::Controller master(pros::E_CONTROLLER_MASTER);
 pros::MotorGroup left_mg({11, -16, 20});
 pros::MotorGroup right_mg({-19, 13, -17});
 
+// TODO: TEMPORARY TEST PORTS — 19 and 20 are already taken by drive motors,
+// and a smart port only supports one device, so the IMU and X tracker do NOT
+// work as wired here (get_heading() returns inf, get_position() returns
+// PROS_ERR, and odometry is garbage). Move both to free ports before running
+// odometry or auton.
 pros::Imu inertial(19);      // WARNING: port 19 is also a right-drive motor!
 pros::Rotation xrot(20);     // WARNING: port 20 is also a left-drive motor!
 pros::Rotation yrot(1);
@@ -45,9 +50,23 @@ double deg2rad = M_PI / 180.0;
 
 double adjustment = .01; // need to tune dis
 
-double ticks_per_rev = 36000.0; 
-double wheel_diameter = 2.0;   
+double ticks_per_rev = 36000.0;
+double wheel_diameter = 2.0;
 double inches_per_tick = (wheel_diameter * M_PI) / ticks_per_rev;
+
+// ── Tracking wheel offsets from the robot's CENTER OF ROTATION (inches) ──
+// Even though heading comes from the IMU, an off-center tracking wheel rolls
+// along an arc whenever the robot spins, recording distance that is NOT real
+// translation. Each odometry loop subtracts that arc (offset × Δheading).
+//   X_TRACKER_OFFSET: how far the sideways (x) tracker sits IN FRONT of the
+//                     center of rotation (negative if behind it)
+//   Y_TRACKER_OFFSET: how far the forward (y) tracker sits to the RIGHT of
+//                     the center of rotation (negative if left of it)
+// TODO: MEASURE these on the robot and fill them in — 0 disables the
+// correction (current behavior). Quick check after measuring: spin the bot
+// in place; X/Y on the LCD should barely move.
+double X_TRACKER_OFFSET = 0.0;  // inches — MEASURE ME
+double Y_TRACKER_OFFSET = 0.0;  // inches — MEASURE ME
 
 double headingside = 1;
 
@@ -67,9 +86,10 @@ static constexpr double IMAGE_W  = 320.0;
 static const double FOCAL_PX = (IMAGE_W / 2.0) / std::tan(HFOV_DEG / 2.0 * M_PI / 180.0);
 static constexpr double TAG_SIZE = 5.0;  // inches — MEASURE YOUR TAG AND CHANGE THIS
 
-static constexpr double MIN_SCORE = 65.0;  // skip detections below this confidence %
+// NOTE: AprilTag detections carry no confidence score in the AI Vision API
+// (only AI-model detections do), so tag quality is filtered by width instead.
 static constexpr double MIN_WIDTH = 15;    // skip tags smaller than 15px (too far/blurry)
-static constexpr double MAX_JUMP  = 12.0;  // skip correction if > 12" from odom estimate
+static constexpr double MAX_JUMP  = 12.0;  // skip fix if > 12" from the default start pose
 
 static constexpr double BLEND = 0.3;
 
@@ -80,24 +100,6 @@ static uint32_t av_updates   = 0;
 
 pros::Mutex odom_lock;
 
-void set_pose(double x, double y, double heading, double headingside_param) {
-    while(true)   { 
-        if (odom_lock.take(50)) {  // 50ms timeout instead of TIMEOUT_MAX
-            botx = x;
-            boty = y;
-            headingside = headingside_param;
-            starting_heading = heading;
-            odom_lock.give();
-            break;
-        } else {
-            pros::lcd::print(0, "Set Pose: Mutex timeout!");
-        }
-    }
-    
-    // Print to confirm
-    pros::lcd::print(0, "POSE SET: %.2f %.2f", x, y);
-}
-
 double normalise_angle(double angle) {
     angle = fmod(angle, 360.0);
 
@@ -105,6 +107,31 @@ double normalise_angle(double angle) {
     if (angle < -180.0) angle += 360.0;
 
     return angle;
+}
+
+void set_pose(double x, double y, double heading, double headingside_param) {
+    // Offset the IMU so (imu + starting_heading) equals `heading` right now.
+    // This works mid-run too — not just right after calibration, when the
+    // IMU happens to read 0.
+    double imu_now = inertial.get_heading();
+    if (std::isinf(imu_now) || std::isnan(imu_now)) imu_now = 0.0;
+
+    while(true)   {
+        if (odom_lock.take(50)) {  // 50ms timeout instead of TIMEOUT_MAX
+            botx = x;
+            boty = y;
+            headingside = headingside_param;
+            starting_heading = normalise_angle(heading - imu_now);
+            both = normalise_angle(heading);
+            odom_lock.give();
+            break;
+        } else {
+            pros::lcd::print(0, "Set Pose: Mutex timeout!");
+        }
+    }
+
+    // Print to confirm
+    pros::lcd::print(0, "POSE SET: %.2f %.2f", x, y);
 }
 
 
@@ -115,6 +142,11 @@ double normalise_angle(double angle) {
 // returns true. On failure it leaves the current default pose untouched
 // and returns false. Uses the KNOWN start heading, so no IMU required.
 bool apriltag_initial_fix(double start_heading, int max_attempts) {
+    // Default/start pose (set_pose was called just before this) — used by
+    // the MAX_JUMP sanity check below
+    double def_x = 0, def_y = 0;
+    if (odom_lock.take(50)) { def_x = botx; def_y = boty; odom_lock.give(); }
+
     for (int attempt = 1; attempt <= max_attempts; attempt++) {
         int count = aivision.get_object_count();
         pros::lcd::print(1, "FIX try %d/%d objs:%d", attempt, max_attempts, count);
@@ -149,6 +181,13 @@ bool apriltag_initial_fix(double start_heading, int max_attempts) {
             double est_x = tag->x - distance * std::sin(bearing_rad);
             double est_y = tag->y - distance * std::cos(bearing_rad);
 
+            // Sanity check: the fix can't be far from where the robot was
+            // physically placed on the field
+            if (std::hypot(est_x - def_x, est_y - def_y) > MAX_JUMP) {
+                pros::lcd::print(4, "T%d fix too far off", obj.id);
+                continue;
+            }
+
             if (tag_width > best_width) {          // keep the closest tag this frame
                 best_width = tag_width;
                 best_x = est_x;  best_y = est_y;  best_id = obj.id;
@@ -174,6 +213,8 @@ bool apriltag_initial_fix(double start_heading, int max_attempts) {
 void updatepose(void* ignore){
     double prev_x = 0;
     double prev_y = 0;
+    double prev_raw_h = 0;      // raw IMU reading (no starting_heading offset)
+    bool have_prev_h = false;
     int loop_count = 0;
     int display_counter = 0;
 
@@ -184,19 +225,34 @@ void updatepose(void* ignore){
         loop_count++;
         
         // 1. Get Sensor Readings
-        double curr_x = xrot.get_position(); 
+        double curr_x = xrot.get_position();
         double curr_y = yrot.get_position();
-        double curr_h = inertial.get_heading() + starting_heading;
+        double raw_h  = inertial.get_heading();
+        double curr_h = raw_h + starting_heading;
 
-        // 2. Check for IMU errors
-        //if (std::isinf(curr_h) || std::isnan(curr_h)) {
-         //    pros::delay(10);
-        //     continue; 
-        //}
+        // 2. Check for IMU errors — one inf/NaN reading would poison
+        // botx/boty permanently (NaN never leaves the accumulator)
+        if (std::isinf(curr_h) || std::isnan(curr_h)) {
+            pros::delay(10);
+            continue;
+        }
+        // Δheading uses the RAW reading so a set_pose() mid-run (which shifts
+        // starting_heading) can't show up as a fake rotation
+        if (!have_prev_h) { prev_raw_h = raw_h; have_prev_h = true; }
 
         // 3. Calculate deltas
-        double delta_x = (curr_x - prev_x) * inches_per_tick; 
+        double delta_x = (curr_x - prev_x) * inches_per_tick;
         double delta_y = (curr_y - prev_y) * inches_per_tick;
+        double delta_h_rad = normalise_angle(raw_h - prev_raw_h) * deg2rad;
+        prev_raw_h = raw_h;
+
+        // 3b. Tracking wheel offset compensation: remove the arc the wheels
+        // roll when the robot rotates (clockwise spin → x tracker mounted in
+        // front rolls right, y tracker mounted right of center rolls back).
+        // Without this, every turn leaks a bit of fake x/y movement.
+        delta_x -= delta_h_rad * X_TRACKER_OFFSET;
+        delta_y += delta_h_rad * Y_TRACKER_OFFSET;
+
         double theta = -normalise_angle(curr_h) * deg2rad;
 
         // 4. Update odometry with mutex protection - USE TIMEOUT
@@ -277,11 +333,21 @@ void competition_initialize() {
 }
 
 
+// move_velocity() scale: must match the CONFIGURED gearset, not the physical
+// cartridge. The drive cartridges are blue (600 RPM) but the motors are set
+// to green, so ±200 here still spans the full speed range. If the configured
+// gearset ever changes, change this too (red = 100, green = 200, blue = 600).
+static constexpr double DRIVE_MAX_RPM = 200.0;
+
 static double vperc(double perc) {
-	return (perc / 100.0) * 200.0;
+	return (perc / 100.0) * DRIVE_MAX_RPM;
 }
 
 void opcontrol() {
+	// The autonomous PIDs leave the drive in HOLD — release it for the driver
+	left_mg.set_brake_mode(pros::E_MOTOR_BRAKE_COAST);
+	right_mg.set_brake_mode(pros::E_MOTOR_BRAKE_COAST);
+
 	double isdone = 0;
 	double speed = 1;
 	while (true){
@@ -332,15 +398,14 @@ void turn(double ang, double kd, double kp, double ki, double timeout) {
     bool first_loop = true;
 
     while (true) {
-        // Get heading with timeout to prevent deadlock
-        double current_heading = 0;
-        if (odom_lock.take(50)) {
-            current_heading = both; 
-            odom_lock.give();
-        } else {
+        // Read the IMU directly — `both` is only written every 20 ms by the
+        // odometry task, so it can be one cycle stale and jitter the D term
+        double current_heading = inertial.get_heading() + starting_heading;
+        if (std::isinf(current_heading) || std::isnan(current_heading)) {
             pros::delay(10);
             continue;
         }
+        current_heading = normalise_angle(current_heading);
 
         // Calculate Error
         error = normalise_angle(target_heading - current_heading);
