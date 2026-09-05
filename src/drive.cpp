@@ -20,6 +20,8 @@ constexpr int    TURN_SETTLE_MS  = 100;
 constexpr double DRIVE_SETTLE_IN = 1.0;
 constexpr int    DRIVE_SETTLE_MS = 100;
 
+constexpr int DRIVE_DISPLAY_EVERY_TICKS = 5;
+
 constexpr double MIN_HEADING_SCALE = 0.15;
 
 constexpr double MAX_LEAD = 0.9;
@@ -134,8 +136,9 @@ MotionResult Drivetrain::drive_distance(double inches, PidGains gains,
     const double        start_position = hw_.yrot.get_position() * inches_per_tick;
     const std::uint32_t start_time     = pros::millis();
 
-    int          settled_ms = 0;
-    MotionResult result     = MotionResult::Timeout;
+    int          settled_ms      = 0;
+    int          display_counter = 0;
+    MotionResult result          = MotionResult::Timeout;
 
     while (true) {
         if (interrupts_.poll())             { result = MotionResult::Interrupted; break; }
@@ -144,6 +147,11 @@ MotionResult Drivetrain::drive_distance(double inches, PidGains gains,
         const double travelled = (hw_.yrot.get_position() * inches_per_tick) - start_position;
         const double error     = inches - travelled;
         const double power     = distance.update(error);
+
+        if (++display_counter >= DRIVE_DISPLAY_EVERY_TICKS) {
+            display_counter = 0;
+            pros::lcd::print(5, "DRV trv %.1f err %.1f pwr %.0f", travelled, error, power);
+        }
 
         double correction = 0.0;
         if (hold_heading) {

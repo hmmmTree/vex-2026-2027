@@ -38,8 +38,6 @@ double Pid::update(double error, double dt) {
         has_prev_   = true;
     }
 
-    set_derivative_smoothing(4);  // clamp smoothing in case it changed since last update
-
     for (std::size_t i = smoothing_; i-- > 1;) history_[i] = history_[i - 1];
     history_[0] = (error - prev_error_) / dt;
 
@@ -67,8 +65,12 @@ double Pid::update(double error, double dt) {
                         + (derivative_ * gains_.kd)
                         + (integral_ * gains_.ki);
 
-    if (slew_ > 0.0) output_ += std::clamp(target - output_, -slew_, slew_);
-    else             output_ = target;
+    // Slew only limits how fast the output grows. Backing off must be instant,
+    // or the loop cannot shed speed as it nears the target and sails past it.
+    const bool same_direction = output_ == 0.0 || (target > 0.0) == (output_ > 0.0);
+    const bool speeding_up    = same_direction && std::fabs(target) > std::fabs(output_);
+    if (slew_ > 0.0 && speeding_up) output_ += std::clamp(target - output_, -slew_, slew_);
+    else                            output_ = target;
 
     output_ = std::clamp(output_, out_min_, out_max_);
     return output_;

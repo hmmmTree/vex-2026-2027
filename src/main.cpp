@@ -16,7 +16,7 @@ constexpr double LEG_CM   = 10.0;
 //constexpr double LEG_IN   = LEG_CM * CM_TO_IN;
 
 // {kp, ki, kd}
-constexpr PidGains DRIVE_GAINS{5.0, 0.0, 0.5};
+constexpr PidGains DRIVE_GAINS{5.0, 0.0, 1.0};
 
 // as it did before.
 constexpr PidGains CORDON_TURN_GAINS{3.5, 0.0, 0.05};
@@ -29,7 +29,7 @@ constexpr double FINAL_RADIUS    = 0.5;
 
 constexpr double BOOMERANG_LEAD = 0.5;
 
-constexpr double DRIVE_TIMEOUT = 3.0;
+constexpr double DRIVE_TIMEOUT = 60.0;
 constexpr double TURN_TIMEOUT  = 2.0;
 
 constexpr double MACRO_DISTANCE_IN = 12.0;
@@ -62,6 +62,8 @@ void initialize() {
     robot.hardware().configure();
     robot.hardware().inertial.reset(true);
 
+    
+
     robot.odometry().start();
 
     robot.vision().begin();
@@ -69,8 +71,6 @@ void initialize() {
 
     robot.odometry().set_pose(x_int, y_int, START_HEADING, -1.0);
     robot.vision().initial_fix(START_HEADING, 15);
-
-    pros::lcd::print(1, "ROBOT READY");
 
 
     
@@ -131,7 +131,9 @@ void autonomous() {
     robot.diagnostics().show_result("auton", result, interrupts);
 */  
     
-    robot.drivetrain().drive_distance(24, DRIVE_GAINS, HEADING_HOLD_GAINS, DRIVE_TIMEOUT);
+    const MotionResult result =
+        robot.drivetrain().drive_distance(24, DRIVE_GAINS, HEADING_HOLD_GAINS, DRIVE_TIMEOUT);
+    robot.diagnostics().show_result("auton", result, interrupts);
     //pros::delay(500);
     //robot.drivetrain().turn_to(90, TURN_GAINS, TURN_TIMEOUT);
 }

@@ -24,6 +24,16 @@ private:
 
 constexpr int DISPLAY_EVERY_TICKS = 10;
 
+// A rotation sensor reports failure as PROS_ERR, which is INT32_MAX and so
+// stays perfectly finite once it becomes a double. It has to be checked by
+// value, or a dead port reads as a few hundred thousand inches of travel.
+bool read_ticks(const pros::Rotation& sensor, double& out) {
+    const std::int32_t raw = sensor.get_position();
+    if (raw == PROS_ERR) return false;
+    out = static_cast<double>(raw);
+    return true;
+}
+
 }
 
 double normalise_angle(double angle) {
@@ -140,43 +150,67 @@ void Odometry::run() {
     while (!stop_requested_.load()) {
         // Device reads happen outside the lock they talk to the V5 brain and
         // must not hold up a control loop that only wants the last pose.
+        // Every path out of this iteration must delay, or the task spins and
+        // starves the rest of the system including the brain screen.
+        pros::delay(LOOP_INTERVAL_MS);
 
-        // Ignore tracker movement that is larger than the configured tolerance, which
-        // is probably a bad read.
-        if (std::abs(hw_.xrot.get_position() - prev_x) > config_.tolerance * inches_per_tick) continue;
-        if (std::abs(hw_.yrot.get_position() - prev_y) > config_.tolerance * inches_per_tick) continue;
-        if (std::abs(hw_.inertial.get_heading() - prev_raw_h) > config_.tolerance) continue;
+        // Decided before any early exit, so a tick that cannot produce a pose
+        // still gets to say so instead of leaving the line frozen.
+        const bool display_due = ++display_counter >= DISPLAY_EVERY_TICKS;
+        if (display_due) display_counter = 0;
 
-        const double curr_x = hw_.xrot.get_position();
-        const double curr_y = hw_.yrot.get_position();
-        const double raw_h  = hw_.inertial.get_heading();
+        double curr_x = 0.0;
+        double curr_y = 0.0;
+        const bool x_ok = read_ticks(hw_.xrot, curr_x);
+        const bool y_ok = read_ticks(hw_.yrot, curr_y);
 
-        if (!std::isfinite(raw_h)) {
-            pros::delay(10);
+        // The trackers are essential; without them there is nothing to
+        // integrate. The IMU is not: with it absent the heading simply holds
+        // whatever set_pose() seeded, which is all straight-line work needs.
+        if (!x_ok || !y_ok) {
+            if (display_due) {
+                pros::lcd::print(2, "ODOM no data: %s%s", x_ok ? "" : "X ", y_ok ? "" : "Y");
+            }
             continue;
         }
 
+        double     raw_h = hw_.inertial.get_heading();
+        const bool h_ok  = std::isfinite(raw_h);
+        if (!h_ok) raw_h = have_prev_h ? prev_raw_h : 0.0;
+
+        // The first good sample only seeds the reference; there is no interval
+        // to integrate yet, and comparing against an unset reference would
+        // reject every reading that follows.
         if (!have_prev_h) {
+            prev_x      = curr_x;
+            prev_y      = curr_y;
             prev_raw_h  = raw_h;
             have_prev_h = true;
-        }
-
-        if (!lock_.take(50)) {
-            pros::delay(10);
             continue;
         }
-        {
+
+        const double delta_x_in = (curr_x - prev_x) * inches_per_tick;
+        const double delta_y_in = (curr_y - prev_y) * inches_per_tick;
+        const double delta_h    = normalise_angle(raw_h - prev_raw_h);
+
+        // Ignore movement larger than the configured tolerance, which is
+        // probably a bad read. Drop the interval but still advance the
+        // reference, otherwise one bad sample makes every later one look like
+        // an equally large jump and the estimate never recovers.
+        const bool implausible = std::abs(delta_x_in) > config_.tolerance ||
+                                 std::abs(delta_y_in) > config_.tolerance ||
+                                 std::abs(delta_h)    > config_.tolerance_heading;
+
+        if (!implausible && lock_.take(50)) {
             ReleaseOnExit guard(lock_);
 
             const double curr_h      = normalise_angle(raw_h + heading_offset_);
-            const double delta_h_rad = normalise_angle(raw_h - prev_raw_h) * deg2rad;
+            const double delta_h_rad = delta_h * deg2rad;
 
             // Each tracker sits off the tracking centre, so a pure rotation
             // sweeps it through an arc that is not real translation.
-            double delta_x = (curr_x - prev_x) * inches_per_tick;
-            double delta_y = (curr_y - prev_y) * inches_per_tick;
-            delta_x -= delta_h_rad * config_.x_tracker_offset;
-            delta_y += delta_h_rad * config_.y_tracker_offset;
+            const double delta_x = delta_x_in - delta_h_rad * config_.x_tracker_offset;
+            const double delta_y = delta_y_in + delta_h_rad * config_.y_tracker_offset;
 
             const double theta = -curr_h * deg2rad;
 
@@ -189,15 +223,16 @@ void Odometry::run() {
         prev_y     = curr_y;
         prev_raw_h = raw_h;
 
-        if (++display_counter >= DISPLAY_EVERY_TICKS) {
-            display_counter = 0;
+        if (display_due) {
             Pose shown;
             if (read(shown, 5)) {
-                pros::lcd::print(2, "X:%.1f Y:%.1f H:%.0f", shown.x, shown.y, shown.heading);
+                pros::lcd::print(2, "X:%.1f Y:%.1f H:%.0f%s%s",
+                                 shown.x, shown.y, shown.heading,
+                                 implausible ? " !" : "", h_ok ? "" : " noIMU");
+            } else {
+                pros::lcd::print(2, "ODOM pose locked");
             }
         }
-
-        pros::delay(LOOP_INTERVAL_MS);
     }
 }
 
