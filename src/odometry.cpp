@@ -140,6 +140,13 @@ void Odometry::run() {
     while (!stop_requested_.load()) {
         // Device reads happen outside the lock they talk to the V5 brain and
         // must not hold up a control loop that only wants the last pose.
+
+        // Ignore tracker movement that is larger than the configured tolerance, which
+        // is probably a bad read.
+        if (std::abs(hw_.xrot.get_position() - prev_x) > config_.tolerance * inches_per_tick) continue;
+        if (std::abs(hw_.yrot.get_position() - prev_y) > config_.tolerance * inches_per_tick) continue;
+        if (std::abs(hw_.inertial.get_heading() - prev_raw_h) > config_.tolerance) continue;
+
         const double curr_x = hw_.xrot.get_position();
         const double curr_y = hw_.yrot.get_position();
         const double raw_h  = hw_.inertial.get_heading();

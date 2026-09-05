@@ -6,6 +6,8 @@
 #include "robot/interrupt.hpp"
 #include "robot/odometry.hpp"
 
+#include <cstddef>
+
 namespace robot {
 
 // A "drive to this point" request. Grouping the twelve loose parameters the old
@@ -57,6 +59,14 @@ struct CordonRequest {
     bool reverse = false;
 };
 
+// Filtering applied to a motion's distance PID. Held on the Drivetrain so it
+// can be changed while tuning, but applied to a fresh Pid on every call so no
+// controller state carries from one motion into the next.
+struct DriveTuning {
+    std::size_t derivative_samples = 1;    // rolling average of the derivative, 8 max
+    double      slew               = 0.0;  // largest output change per tick, 0 disables
+};
+
 // The drive base driver control and the autonomous motions built on top of it
 // Every autonomous motion polls the shared Interrupts once per control tick and
 // returns MotionResult::Interrupted motors stopped, if anything fired. None of
@@ -89,6 +99,15 @@ public:
 
     [[nodiscard]] MotionResult cordon(const CordonRequest& request);
 
+    // --- tuning -----------------------------------------------------------
+
+    // Applied to the distance PID when a motion starts, so changing these has
+    // no effect on a motion already running.
+    void        set_drive_tuning(DriveTuning tuning)  { drive_tuning_  = tuning; }
+    void        set_cordon_tuning(DriveTuning tuning) { cordon_tuning_ = tuning; }
+    DriveTuning drive_tuning() const  { return drive_tuning_; }
+    DriveTuning cordon_tuning() const { return cordon_tuning_; }
+
     // Percent of DRIVE_MAX_RPM to motor RPM This was vperc()
     static double velocity_percent_to_rpm(double percent);
 
@@ -103,6 +122,11 @@ private:
     Hardware&   hw_;
     Odometry&   odometry_;
     Interrupts& interrupts_;
+
+    // Defaults preserve what these motions did when the values were hard-coded
+    // in drive.cpp: drive_distance smooths and slews, cordon does neither.
+    DriveTuning drive_tuning_ {6, 3.0};
+    DriveTuning cordon_tuning_{1, 0.0};
 
     double last_turn_error_ = 0.0;
     double last_turn_power_ = 0.0;

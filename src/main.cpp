@@ -1,5 +1,6 @@
 #include "main.h"
 
+#include "pros/rtos.hpp"
 #include "robot/robot.hpp"
 
 using namespace robot;
@@ -12,7 +13,7 @@ constexpr double START_HEADING = 0.0;
 
 constexpr double CM_TO_IN = 1.0 / 2.54;
 constexpr double LEG_CM   = 10.0;
-constexpr double LEG_IN   = LEG_CM * CM_TO_IN;
+//constexpr double LEG_IN   = LEG_CM * CM_TO_IN;
 
 // {kp, ki, kd}
 constexpr PidGains DRIVE_GAINS{5.0, 0.0, 0.5};
@@ -66,8 +67,13 @@ void initialize() {
     robot.vision().begin();
     pros::delay(300);
 
-    robot.odometry().set_pose(0.0, 0.0, START_HEADING, -1.0);
+    robot.odometry().set_pose(x_int, y_int, START_HEADING, -1.0);
     robot.vision().initial_fix(START_HEADING, 15);
+
+    pros::lcd::print(1, "ROBOT READY");
+
+
+    
 }
 
 void disabled() {
@@ -86,12 +92,15 @@ void autonomous() {
     ScopedInterrupt overheating(interrupts, "drive too hot",
                                 triggers::motors_over_temp(robot.hardware().left,
                                                            MOTOR_TEMP_LIMIT_C));
+    ScopedInterrupt overheating_right(interrupts, "drive too hot",
+                                       triggers::motors_over_temp(robot.hardware().right,
+                                                                  MOTOR_TEMP_LIMIT_C));
     ScopedInterrupt takeover(interrupts, "driver takeover",
                              triggers::driver_takeover(robot.hardware().master));
-
+/*
     const CordonRequest waypoint{
         .x                = 0.0,
-        .y                = LEG_IN,
+        .y                = 10,
         .drive_gains      = DRIVE_GAINS,
         .turn_gains       = CORDON_TURN_GAINS,
         .drive_timeout    = DRIVE_TIMEOUT,
@@ -100,8 +109,8 @@ void autonomous() {
     };
 
     const CordonRequest finish{
-        .x             = LEG_IN,
-        .y             = LEG_IN,
+        .x             = 10,
+        .y             = 10,
         .drive_gains   = DRIVE_GAINS,
         .turn_gains    = CORDON_TURN_GAINS,
         .drive_timeout = DRIVE_TIMEOUT,
@@ -111,6 +120,8 @@ void autonomous() {
         .lead          = BOOMERANG_LEAD,
     };
 
+
+
     MotionResult result = robot.drivetrain().cordon(waypoint);
     if (!interrupts.tripped()) {
         result = robot.drivetrain().cordon(finish);
@@ -118,6 +129,11 @@ void autonomous() {
 
     robot.drivetrain().stop();
     robot.diagnostics().show_result("auton", result, interrupts);
+*/  
+    
+    robot.drivetrain().drive_distance(24, DRIVE_GAINS, HEADING_HOLD_GAINS, DRIVE_TIMEOUT);
+    //pros::delay(500);
+    //robot.drivetrain().turn_to(90, TURN_GAINS, TURN_TIMEOUT);
 }
 
 void opcontrol() {

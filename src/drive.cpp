@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstddef>
 #include <cstdint>
 
 namespace robot {
@@ -20,9 +19,6 @@ constexpr int    TURN_SETTLE_MS  = 100;
 
 constexpr double DRIVE_SETTLE_IN = 1.0;
 constexpr int    DRIVE_SETTLE_MS = 100;
-
-constexpr double      DRIVE_SLEW               = 3.0;
-constexpr std::size_t DRIVE_DERIVATIVE_SAMPLES = 6;
 
 constexpr double MIN_HEADING_SCALE = 0.15;
 
@@ -64,8 +60,8 @@ void Drivetrain::set_brake_mode(pros::motor_brake_mode_e mode) {
 void Drivetrain::arcade(int forward, int rotate, double scale) {
     // The original opcontrol negated the turn axis, so keep steering the way
     // the driver has trained on.
-    hw_.left.move(static_cast<int>((forward - rotate) * scale));
-    hw_.right.move(static_cast<int>((forward + rotate) * scale));
+    hw_.left.move(static_cast<int>((forward + rotate) * scale));
+    hw_.right.move(static_cast<int>((forward - rotate) * scale));
 }
 
 void Drivetrain::tank(int left, int right, double scale) {
@@ -121,8 +117,8 @@ MotionResult Drivetrain::drive_distance(double inches, PidGains gains,
     set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
 
     Pid distance(gains, DRIVE_INTEGRAL);
-    distance.set_derivative_smoothing(DRIVE_DERIVATIVE_SAMPLES);
-    distance.set_slew(DRIVE_SLEW);
+    distance.set_derivative_smoothing(drive_tuning_.derivative_samples);
+    distance.set_slew(drive_tuning_.slew);
 
     // Hold the heading the robot started at, if the caller asked for it and the
     // pose is actually readable right now
@@ -174,6 +170,8 @@ MotionResult Drivetrain::cordon(const CordonRequest& request) {
     set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
 
     Pid distance(request.drive_gains, CORDON_DRIVE_INTEGRAL);
+    distance.set_derivative_smoothing(cordon_tuning_.derivative_samples);
+    distance.set_slew(cordon_tuning_.slew);
     distance.set_output_limits(-100.0, 100.0);
     Pid heading(request.turn_gains, CORDON_TURN_INTEGRAL);
 

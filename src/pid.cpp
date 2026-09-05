@@ -38,6 +38,8 @@ double Pid::update(double error, double dt) {
         has_prev_   = true;
     }
 
+    set_derivative_smoothing(4);  // clamp smoothing in case it changed since last update
+
     for (std::size_t i = smoothing_; i-- > 1;) history_[i] = history_[i - 1];
     history_[0] = (error - prev_error_) / dt;
 

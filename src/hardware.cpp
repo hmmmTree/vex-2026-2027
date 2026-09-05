@@ -4,8 +4,8 @@ namespace robot {
 
 Hardware::Hardware()
     : master(pros::E_CONTROLLER_MASTER),
-      left({1, 6, 9}),
-      right({-18, -19, -20}),
+      left(std::vector<std::int8_t>(LEFT_PORTS.begin(),  LEFT_PORTS.end())),
+      right(std::vector<std::int8_t>(RIGHT_PORTS.begin(), RIGHT_PORTS.end())),
       inertial(IMU_PORT),
       xrot(XROT_PORT),
       yrot(YROT_PORT),
