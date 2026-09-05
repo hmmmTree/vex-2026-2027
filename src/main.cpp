@@ -54,7 +54,13 @@ void run_interruptible_macro() {
 }
 
 void initialize() {
-    pros::lcd::initialize();
+    // pros::screen is part of the kernel itself, so this line shows up even
+    // when the LLEMU library is missing from the cold image on the brain.
+    // If "screen alive" appears but the LLEMU frame never does, the fix is a
+    // full re-upload (pros make clean && pros make && pros upload --force).
+    const bool lcd_ok = pros::lcd::initialize();
+    pros::screen::print(pros::E_TEXT_MEDIUM, 1, "screen alive, llemu %s",
+                        lcd_ok ? "ok" : "FAILED");
 
     Robot& robot = bot();
 
