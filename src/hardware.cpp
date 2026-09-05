@@ -4,8 +4,9 @@ namespace robot {
 
 Hardware::Hardware()
     : master(pros::E_CONTROLLER_MASTER),
-      left({1, 6, 9}),
-      right({-18, -19, -20}),
+      // Port numbers and reversal flags are documented in hardware.hpp.
+      left({LEFT_FRONT_PORT, LEFT_MID_PORT, LEFT_BACK_PORT}),
+      right({RIGHT_FRONT_PORT, RIGHT_MID_PORT, RIGHT_BACK_PORT}),
       inertial(IMU_PORT),
       xrot(XROT_PORT),
       yrot(YROT_PORT),
