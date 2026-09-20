@@ -19,8 +19,8 @@ inline constexpr double DRIVE_MAX_RPM = 200.0;
 inline constexpr double LOOP_INTERVAL_S  = 0.02;
 inline constexpr int    LOOP_INTERVAL_MS = 20;
 
-inline constexpr int x_int = 20;
-inline constexpr int y_int = 20;
+inline constexpr int x_int = 0;
+inline constexpr int y_int = -61;
 
 // One PID tuning passed as a single value instead of three loose doubles
 struct PidGains {
@@ -39,10 +39,10 @@ struct IntegralLimits {
 // Tracking-wheel geometry how far each tracker sits from the tracking centre,
 // used to subtract the arc a tracker sweeps when the robot rotates in place
 struct OdometryConfig {
-    double x_tracker_offset  = 0.0;
-    double y_tracker_offset  = 0.0;
+    double x_tracker_offset  = -4.37; //i swear to god if you change this i will find you
+    double y_tracker_offset  = 0.63; //i swear to god if you change this i will find you
     double tolerance         = 2.5;  // ignore tracker movement larger than this
-    double tolerance_heading = 7.5;  // ignore heading movement larger than this
+    double tolerance_heading = 30;  // ignore heading movement larger than this
 };
 
 }

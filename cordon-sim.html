@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>cordon() simulator</title>
+<style>
+:root{
+  --bg:#faf9f5; --card:#fff; --line:#e3e1d9; --line2:#c9c6ba;
+  --fg:#23221f; --fg2:#5f5e5a; --fg3:#8a887f;
+  --teal:#1d9e75; --teal-d:#0f6e56; --amber:#ef9f27; --amber-d:#ba7517;
+  --grey:#b4b2a9; --red:#c0392b;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#1c1b19; --card:#252420; --line:#3a3833; --line2:#4e4b44;
+    --fg:#eceae3; --fg2:#b3b0a6; --fg3:#84817a;
+    --teal:#5dcaa5; --teal-d:#9fe1cb; --amber:#efa940; --amber-d:#fac775;
+    --grey:#6d6a63; --red:#e57368;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:15px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;}
+.wrap{max-width:1080px;margin:0 auto;padding:24px 20px 64px}
+h1{font-size:22px;font-weight:500;margin:0 0 4px}
+.sub{color:var(--fg2);font-size:13px;margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:14px}
+.ch{font-size:12px;color:var(--fg3);margin-bottom:10px;letter-spacing:.02em}
+svg{display:block;width:100%;height:auto}
+#plot{touch-action:none;cursor:grab}
+#plot.grabbing{cursor:grabbing}
+.t{font-size:12px;fill:var(--fg2)}
+.legend{font-size:12px;color:var(--fg3);line-height:1.7;margin:10px 2px 0}
+.tk{display:grid;grid-template-columns:110px 1fr 70px 84px;align-items:center;gap:10px;font-size:13px;color:var(--fg2)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.r{display:grid;grid-template-columns:132px 1fr 66px;align-items:center;gap:6px 10px;font-size:12px;color:var(--fg2);margin-bottom:7px}
+.r input[type=range]{width:100%;margin:0;accent-color:var(--teal)}
+.v{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--fg);text-align:right}
+.wr{display:grid;grid-template-columns:24px repeat(5,minmax(40px,1fr)) 38px 38px 38px 26px;align-items:center;gap:6px;margin-bottom:6px;font-size:12px;color:var(--fg2)}
+.wh{color:var(--fg3);text-align:center;font-size:11px}
+.wr input[type=number]{width:100%;font:12px ui-monospace,Menlo,Consolas,monospace;padding:5px 6px;
+  border:1px solid var(--line2);border-radius:5px;background:var(--bg);color:var(--fg)}
+.wr .mid{text-align:center}
+button{font:12px inherit;padding:6px 12px;border:1px solid var(--line2);background:var(--card);
+  color:var(--fg);border-radius:7px;cursor:pointer}
+button:hover{border-color:var(--fg3)}
+.err{font-size:13px;color:var(--red);min-height:18px;margin-top:6px}
+.ro{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.ro div{font-size:11px;color:var(--fg3)}
+.ro b{display:block;font:13px ui-monospace,Menlo,Consolas,monospace;font-weight:400;color:var(--fg);margin-top:2px}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px}
+.topbar{position:sticky;top:0;z-index:10;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+  background:var(--bg);border-bottom:1px solid var(--line);padding:10px 0 12px;margin:0 0 14px}
+.mini{font:12px ui-monospace,Menlo,Consolas,monospace;padding:4px 6px;border:1px solid var(--line2);
+  border-radius:5px;background:var(--bg);color:var(--fg);width:68px;margin-left:5px}
+.lbl{font-size:12px;color:var(--fg3);display:inline-flex;align-items:center;margin-left:0}
+button:disabled{opacity:.42;cursor:default}
+button:disabled:hover{border-color:var(--line2)}
+.note{font-size:12px;color:var(--fg3);margin-left:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>cordon() simulator</h1>
+<p class="sub">Runs the control law from <code>src/drive.cpp</code> against a two-wheel model. Settings save to this browser automatically.</p>
+
+<div class="topbar">
+  <button id="savedef">Save as my defaults</button>
+  <button id="resetmine">Reset to my defaults</button>
+  <button id="resetcode">Reset to code values</button>
+  <span class="note" id="barmsg"></span>
+</div>
+
+<div class="card">
+  <svg id="plot" viewBox="0 0 900 470" aria-label="Simulated robot path, drag the waypoints"></svg>
+  <svg id="traces" viewBox="0 0 900 250" role="img" aria-label="Heading and velocity against time"></svg>
+  <div class="legend" id="legend"></div>
+  <div class="bar" style="margin-top:12px">
+    <button id="fieldview">Field view</button>
+    <button id="cppcopy" title="constants and path, grouped by which file each belongs in">Copy C++</button>
+    <label style="font-size:12px;color:var(--fg3)">field image <input type="file" id="fieldimg" accept="image/*" style="max-width:150px"></label>
+    <button id="clearimg">Clear image</button>
+    <span id="cppmsg" style="font-size:12px;color:var(--fg3)"></span>
+    <span class="note">drag any node, start included, to move it &middot; drag its stick to aim final_heading &middot; double-click empty field to add</span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="tk">
+    <label for="tick">control tick</label>
+    <input type="range" id="tick" min="0" max="10" step="1" value="0">
+    <span class="v" id="vtick">0.00 s</span>
+    <button id="play">Play</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch">Waypoints — run in order, pose carries from one leg to the next</div>
+  <div class="bar" style="margin:0 0 12px">
+    <span class="lbl">WAYPOINT_RADIUS <input class="mini" type="number" id="wpr" step="0.25" min="0.25"></span>
+    <span class="lbl">FINAL_RADIUS <input class="mini" type="number" id="finr" step="0.25" min="0.25"></span>
+    <span class="lbl">lead <input class="mini" type="number" id="deflead" step="0.05" min="0"></span>
+    <button id="applydef" title="every point but the last becomes a pass-through at WAYPOINT_RADIUS; the last stops at FINAL_RADIUS">Apply to path</button>
+    <span class="note" id="defmsg"></span>
+  </div>
+  <div class="wr wh"><span></span><span>x</span><span>y</span><span>lead</span><span>head</span><span>exit</span><span>stop</span><span>rev</span><span>turn</span><span></span></div>
+  <div id="wps"></div>
+  <div class="bar"><button id="addwp">Add waypoint</button><button id="delpath">Clear to one point</button></div>
+  <div class="err" id="err"></div>
+</div>
+
+<div class="card">
+  <div class="ch">Paste from PATH.JERRYIO &mdash; the Copy Code output goes straight in here</div>
+  <textarea id="paste" spellcheck="false" placeholder="const CordonRequest path[] = { ... };"
+    style="width:100%;min-height:110px;font:12px ui-monospace,Menlo,Consolas,monospace;padding:9px 10px;border:1px solid var(--line2);border-radius:7px;background:var(--bg);color:var(--fg);resize:vertical"></textarea>
+  <div class="bar">
+    <button id="loadpaste">Load path</button>
+    <span class="note" id="pastemsg"></span>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card"><div class="ch">Constants in drive.cpp</div><div id="g-const"></div></div>
+  <div class="card"><div class="ch">Distance PID and cordon_tuning</div><div id="g-drive"></div></div>
+  <div class="card"><div class="ch">Heading PID</div><div id="g-turn"></div></div>
+  <div class="card"><div class="ch">Trailing turn — per waypoint, via the turn column</div><div id="g-final"></div></div>
+  <div class="card"><div class="ch">Drivetrain model — not from the firmware</div><div id="g-phys"></div></div>
+  <div class="card"><div class="ch">Start pose</div><div id="g-start"></div></div>
+</div>
+
+<div class="card">
+  <div class="ch">At the scrubbed tick</div>
+  <div class="ro" id="ro"></div>
+</div>
+
+<div class="card">
+  <div class="ch">Save and load &mdash; a path file carries its waypoints, lead, radii, gains and drivetrain model</div>
+  <div class="bar">
+    <span class="lbl">name <input class="mini" type="text" id="pathname" style="width:140px" value="path"></span>
+    <button id="savefile">Save to file</button>
+    <span class="lbl">open <input type="file" id="openfile" accept=".json,application/json" style="max-width:150px"></span>
+    <button id="export">Copy settings as JSON</button>
+    <span class="note" id="saved"></span>
+  </div>
+</div>
+</div>
+
+<script>
+"use strict";
+const D2R=Math.PI/180, R2D=180/Math.PI, DT=0.02, KEY="cordon-sim-v2", DKEY="cordon-sim-defaults-v1";
+
+// Defaults mirror src/main.cpp, src/drive.cpp and include/robot/config.hpp.
+const CODE_WP=[
+  {x:0,  y:30, lead:0.6, fh:-90, er:6.0, stop:true, rev:false, tae:false},
+  {x:-24,y:30, lead:0.5, fh:0.0, er:2.0, stop:true, rev:false, tae:true }
+];
+const CODE_O={
+  maxlead:0.9, eps:4.0, mhs:0.0, hsm:3,          // MAX_LEAD, CARROT_EPSILON_IN, MIN_HEADING_SCALE, CORDON_HEADING_SMOOTHING
+  dkp:4.0, dki:0.0, dkd:4.0, dsm:1, dsl:0.0,     // DRIVE_GAINS, cordon_tuning_
+  tkp:0.6, tki:0.0, tkd:5.0, dto:8.0,            // CORDON_TURN_GAINS, DRIVE_TIMEOUT
+  fkp:0.6, fki:0.0, fkd:1.25, tto:2.0,           // TURN_GAINS, turn_timeout default
+  wpr:6.0, finr:2.0, deflead:0.5,
+  maxrpm:200, ratio:0.75, wheel:3.25, track:11.5, tau:0.10,
+  sx:0.0, sy:0.0, sh:0.0, img:""
+};
+
+const SPECS={
+  "g-const":[["maxlead","MAX_LEAD",0.1,1.2,0.05,2],["eps","CARROT_EPSILON_IN",0,8,0.1,1,"in"],
+             ["mhs","MIN_HEADING_SCALE",0,1,0.05,2],["hsm","heading smoothing",1,8,1,0]],
+  "g-drive":[["dkp","drive kp",0,20,0.1,2],["dki","drive ki",0,2,0.05,2],["dkd","drive kd",0,30,0.5,2],
+             ["dsm","derivative_samples",1,8,1,0],["dsl","slew",0,20,0.5,1]],
+  "g-turn":[["tkp","turn kp",0,12,0.1,2],["tki","turn ki",0,2,0.05,2],["tkd","turn kd",0,30,0.5,2],
+            ["dto","drive_timeout",0.4,15,0.2,1,"s"]],
+  "g-final":[["fkp","final turn kp",0,12,0.05,2],["fki","final turn ki",0,2,0.05,2],
+             ["fkd","final turn kd",0,30,0.25,2],["tto","turn_timeout",0.2,6,0.2,1,"s"]],
+  "g-phys":[["maxrpm","DRIVE_MAX_RPM",50,600,10,0],["ratio","gear ratio",0.2,3,0.05,2],
+            ["wheel","wheel dia",2,4.5,0.25,2,"in"],["track","track width",6,18,0.5,1,"in"],
+            ["tau","motor lag",0.02,0.4,0.01,2,"s"]],
+  "g-start":[["sx","start x",-72,72,0.5,1,"in"],["sy","start y",-72,72,0.5,1,"in"],
+             ["sh","start heading",-180,180,1,0,"°"]]
+};
+
+let WP, O, cache=null, timer=null, fieldView=false, tf=null, drag=null;
+
+function norm(a){a=((a+180)%360+360)%360-180;return a===-180?180:a;}
+function f(n,d){return Number(n).toFixed(d);}
+function E(i){return document.getElementById(i);}
+
+function Pid(kp,ki,kd,zone,imax,lo,hi,sm,sl){
+  this.kp=kp;this.ki=ki;this.kd=kd;this.zone=zone;this.imax=imax;
+  this.lo=lo===undefined?-1e18:lo;this.hi=hi===undefined?1e18:hi;
+  this.sm=Math.max(1,Math.min(8,sm||1));this.sl=sl||0;
+  this.hs=[0,0,0,0,0,0,0,0];this.i=0;this.p=0;this.has=false;this.out=0;
+}
+Pid.prototype.u=function(e){
+  if(!this.has){this.p=e;this.has=true;}
+  for(let i=this.sm;i-->1;) this.hs[i]=this.hs[i-1];
+  this.hs[0]=e-this.p;
+  let d=0; for(let j=0;j<this.sm;j++) d+=this.hs[j];
+  d/=this.sm;
+  if((e>0&&this.p<0)||(e<0&&this.p>0)) this.i=0;
+  if(this.zone>0&&Math.abs(e)<this.zone){
+    this.i+=e;
+    if(this.ki!==0&&this.imax>0){const l=Math.abs(this.imax/this.ki);this.i=Math.max(-l,Math.min(l,this.i));}
+  } else this.i=0;
+  this.p=e;
+  const tg=e*this.kp+d*this.kd+this.i*this.ki;
+  const same=this.out===0||((tg>0)===(this.out>0));
+  if(this.sl>0&&same&&Math.abs(tg)>Math.abs(this.out)) this.out+=Math.max(-this.sl,Math.min(this.sl,tg-this.out));
+  else this.out=tg;
+  this.out=Math.max(this.lo,Math.min(this.hi,this.out));
+  return this.out;
+};
+
+function vmax(o){ return (o.maxrpm*o.ratio)*Math.PI*o.wheel/60; }
+function pivotMax(o){ return 2*vmax(o)/o.track*R2D; }
+
+function step(b,L,R,o){
+  const V=vmax(o), al=1-Math.exp(-DT/Math.max(o.tau,0.001));
+  b.vl+=(L/100*V-b.vl)*al; b.vr+=(R/100*V-b.vr)*al;
+  const v=(b.vl+b.vr)/2, w=(b.vl-b.vr)/o.track*R2D;
+  b.x+=v*Math.sin(b.h*D2R)*DT; b.y+=v*Math.cos(b.h*D2R)*DT; b.h=norm(b.h+w*DT);
+}
+function mix(b,F,fr,dp,tp,o){
+  let L=dp+tp, R=dp-tp;
+  const pk=Math.max(Math.abs(L),Math.abs(R));
+  if(pk>100){L=L/pk*100;R=R/pk*100;}
+  fr.L=L; fr.R=R; fr.vc=(L+R)/200*vmax(o);
+  F.push(fr); step(b,L,R,o);
+}
+
+function runPath(o,wps,zeroLead){
+  const b={x:o.sx,y:o.sy,h:o.sh,vl:0,vr:0}, F=[], res=[];
+  let t=0, tres="";
+  for(let n=0;n<wps.length;n++){
+    const w=wps[n];
+    const lead=zeroLead?0:Math.max(0,Math.min(o.maxlead,w.lead));
+    const dP=new Pid(o.dkp,o.dki,o.dkd,8,20,-100,100,o.dsm,o.dsl);
+    const hP=new Pid(o.tkp,o.tki,o.tkd,15,20,undefined,undefined,o.hsm,0);
+    const th=norm(w.fh+(w.rev?180:0)), ux=Math.sin(th*D2R), uy=Math.cos(th*D2R);
+    let r="Timeout";
+    for(let k=0;k<2000;k++){
+      if(k*DT>o.dto){r="Timeout";break;}
+      const dl=Math.hypot(w.x-b.x,w.y-b.y);
+      const tr=dl*lead, cx=w.x-tr*ux, cy=w.y-tr*uy;
+      const tc=Math.hypot(cx-b.x,cy-b.y), frz=tc<=o.eps;
+      let dh=frz?th:norm(90-Math.atan2(cy-b.y,cx-b.x)*R2D);
+      if(w.rev) dh=norm(dh+180);
+      const te=norm(dh-b.h), v=(b.vl+b.vr)/2;
+      if(dl<w.er){
+        r="Settled";
+        F.push({ph:"exit",lg:n,x:b.x,y:b.y,h:b.h,v,vc:0,dl,tr,cx,cy,tc,frz,dh,te,sc:0,dp:0,tp:0,L:0,R:0,t});
+        t+=DT; break;
+      }
+      const tp=hP.u(te);
+      const sc=Math.max(o.mhs,Math.cos(te*D2R));
+      let dp=dP.u(dl)*sc;
+      if(w.rev) dp=-dp;
+      mix(b,F,{ph:"drive",lg:n,x:b.x,y:b.y,h:b.h,v,dl,tr,cx,cy,tc,frz,dh,te,sc,dp,tp,t},dp,tp,o);
+      t+=DT;
+    }
+    res.push(r);
+    if(w.stop){
+      const lf=F[F.length-1]||{dh:0,te:0,cx:w.x,cy:w.y};
+      step(b,0,0,o);
+      F.push({ph:"stop",lg:n,x:b.x,y:b.y,h:b.h,v:(b.vl+b.vr)/2,vc:0,dl:Math.hypot(w.x-b.x,w.y-b.y),
+              tr:0,cx:lf.cx,cy:lf.cy,tc:0,frz:false,dh:lf.dh,te:lf.te,sc:0,dp:0,tp:0,L:0,R:0,t});
+      t+=DT;
+    }
+    if(w.tae){
+      const fP=new Pid(o.fkp,o.fki,o.fkd,10,30,-100,100,1,0);
+      const tgt=norm(w.fh); let sms=0; tres="Timeout";
+      for(let m=0;m<2000;m++){
+        if(m*DT>o.tto){tres="Timeout";break;}
+        const e2=norm(tgt-b.h), pw=fP.u(e2);
+        F.push({ph:"turn",lg:n,x:b.x,y:b.y,h:b.h,v:(b.vl+b.vr)/2,vc:0,dl:Math.hypot(w.x-b.x,w.y-b.y),
+                tr:0,cx:w.x,cy:w.y,tc:0,frz:false,dh:tgt,te:e2,sc:0,dp:0,tp:pw,L:pw,R:-pw,t});
+        t+=DT;
+        sms=(Math.abs(e2)<0.5)?sms+20:0;
+        if(sms>100){tres="Settled";break;}
+        step(b,pw,-pw,o);
+      }
+    }
+    if(res[res.length-1]!=="Settled") break;
+  }
+  return {F,res,tres,total:t,end:{x:b.x,y:b.y,h:b.h}};
+}
+
+function buildSliders(){
+  for(const id in SPECS){
+    E(id).innerHTML=SPECS[id].map(s=>{
+      const [k,label,min,max,st]=s;
+      return `<div class="r"><label for="${k}">${label}</label>`+
+             `<input type="range" id="${k}" min="${min}" max="${max}" step="${st}">`+
+             `<span class="v" id="v-${k}"></span></div>`;
+    }).join("");
+  }
+}
+function specOf(k){ for(const id in SPECS){ const s=SPECS[id].find(x=>x[0]===k); if(s) return s; } return null; }
+function syncBar(){ ["wpr","finr","deflead"].forEach(k=>{ const el=E(k); if(el) el.value=O[k]; }); }
+function syncSliders(){
+  for(const id in SPECS) for(const s of SPECS[id]){
+    const el=E(s[0]); if(el) el.value=O[s[0]];
+  }
+}
+function labelSliders(){
+  for(const id in SPECS) for(const s of SPECS[id]){
+    const [k,,,,,dp,unit]=s;
+    E("v-"+k).textContent=f(O[k],dp)+(unit?" "+unit:"");
+  }
+}
+
+function startRowHtml(){
+  const dash = `<span class="mid" style="color:var(--fg3)">&mdash;</span>`;
+  return `<div class="wr" data-i="-1"><span class="mid" title="start pose">S</span>`+
+    `<input type="number" data-k="x" step="0.5" value="${O.sx}">`+
+    `<input type="number" data-k="y" step="0.5" value="${O.sy}">`+
+    dash+
+    `<input type="number" data-k="fh" step="1" value="${O.sh}">`+
+    dash+dash+dash+dash+`<span></span></div>`;
+}
+function rows(){
+  E("wps").innerHTML=startRowHtml()+WP.map((w,i)=>
+    `<div class="wr" data-i="${i}"><span class="mid">${i+1}</span>`+
+    `<input type="number" data-k="x" step="1" value="${w.x}">`+
+    `<input type="number" data-k="y" step="1" value="${w.y}">`+
+    `<input type="number" data-k="lead" step="0.05" min="0" value="${w.lead}">`+
+    `<input type="number" data-k="fh" step="5" value="${w.fh}">`+
+    `<input type="number" data-k="er" step="0.25" min="0.25" value="${w.er}">`+
+    `<span class="mid"><input type="checkbox" data-k="stop"${w.stop?" checked":""}></span>`+
+    `<span class="mid"><input type="checkbox" data-k="rev"${w.rev?" checked":""}></span>`+
+    `<span class="mid"><input type="checkbox" data-k="tae"${w.tae?" checked":""}></span>`+
+    `<button data-act="del" style="padding:3px 0">×</button></div>`).join("");
+}
+function readRows(){
+  let bad="";
+  document.querySelectorAll("#wps .wr").forEach(r=>{
+    const i=+r.dataset.i;
+    r.querySelectorAll("input").forEach(el=>{
+      const k=el.dataset.k;
+      if(i<0){
+        if(el.value===""||isNaN(+el.value)){bad=bad||("start pose: "+k+" needs a number");return;}
+        const m={x:"sx",y:"sy",fh:"sh"};
+        if(m[k]!==undefined){ O[m[k]]=+el.value; const sl=E(m[k]); if(sl) sl.value=O[m[k]]; }
+        return;
+      }
+      if(el.type==="checkbox"){WP[i][k]=el.checked;return;}
+      if(el.value===""||isNaN(+el.value)){bad=bad||`waypoint ${i+1}: ${k} needs a number`;return;}
+      const v=+el.value;
+      if(k==="er"&&v<0.25){bad=bad||`waypoint ${i+1}: exit must be at least 0.25 in`;return;}
+      if(k==="lead"&&v<0){bad=bad||`waypoint ${i+1}: lead cannot be negative`;return;}
+      WP[i][k]=v;
+    });
+  });
+  E("err").textContent=bad;
+  return !bad;
+}
+
+function chart(F,x0,y0,w,h,series,label,cur,Tm){
+  let lo=1e18,hi=-1e18,o="";
+  series.forEach(s=>F.forEach(p=>{const y=s.get(p); if(y<lo)lo=y; if(y>hi)hi=y;}));
+  if(hi-lo<1e-6) hi=lo+1;
+  const pd=(hi-lo)*0.12; lo-=pd; hi+=pd;
+  const X=t=>x0+(Tm>0?t/Tm:0)*w, Y=v=>y0+h-((v-lo)/(hi-lo))*h;
+  o+=`<line x1="${x0}" y1="${y0+h}" x2="${x0+w}" y2="${y0+h}" stroke="var(--line)" stroke-width="1"/>`;
+  if(lo<0&&hi>0) o+=`<line x1="${x0}" y1="${f(Y(0),1)}" x2="${x0+w}" y2="${f(Y(0),1)}" stroke="var(--line)" stroke-width="1" stroke-dasharray="3 3"/>`;
+  let pl=-1;
+  F.forEach(p=>{ if(p.lg!==pl){pl=p.lg; if(p.t>0) o+=`<line x1="${f(X(p.t),1)}" y1="${y0}" x2="${f(X(p.t),1)}" y2="${y0+h}" stroke="var(--grey)" stroke-width="1" stroke-dasharray="2 3"/>`;}});
+  series.forEach(s=>{
+    const a=F.map(p=>`${f(X(p.t),1)},${f(Y(s.get(p)),1)}`);
+    o+=`<polyline fill="none" points="${a.join(" ")}" stroke="${s.c}" stroke-width="${s.w}"${s.d?' stroke-dasharray="4 4"':""} stroke-linejoin="round"/>`;
+  });
+  o+=`<line x1="${f(X(cur.t),1)}" y1="${y0}" x2="${f(X(cur.t),1)}" y2="${y0+h}" stroke="var(--teal-d)" stroke-width="1.2"/>`;
+  o+=`<text class="t" x="${x0-8}" y="${y0+4}" text-anchor="end">${f(hi,0)}</text>`;
+  o+=`<text class="t" x="${x0-8}" y="${y0+h+4}" text-anchor="end">${f(lo,0)}</text>`;
+  o+=`<text class="t" x="${x0}" y="${y0-8}">${label}</text>`;
+  return o;
+}
+
+function draw(){
+  if(!cache) cache={main:runPath(O,WP,false), ghost:runPath(O,WP,true)};
+  const {main,ghost}=cache, F=main.F;
+  if(!F.length) return;
+  const tk=E("tick");
+  if(+tk.max!==F.length-1) tk.max=Math.max(1,F.length-1);
+  if(+tk.value>+tk.max) tk.value=tk.max;
+  const cur=F[Math.min(+tk.value,F.length-1)];
+  const w=WP[cur.lg]||WP[WP.length-1];
+
+  let mnx,mxx,mny,mxy;
+  if(drag&&tf){ mnx=tf.mnx; mxx=tf.mxx; mny=tf.mny; mxy=tf.mxy; }
+  else if(fieldView){ mnx=-72; mxx=72; mny=-72; mxy=72; }
+  else{
+    const xs=[O.sx], ys=[O.sy];
+    WP.forEach(p=>{xs.push(p.x-p.er,p.x+p.er); ys.push(p.y-p.er,p.y+p.er);});
+    [F,ghost.F].forEach(A=>A.forEach(p=>{xs.push(p.x); ys.push(p.y);}));
+    F.forEach(p=>{xs.push(p.cx); ys.push(p.cy);});
+    mnx=Math.min(...xs)-4; mxx=Math.max(...xs)+4; mny=Math.min(...ys)-4; mxy=Math.max(...ys)+4;
+  }
+  const px0=60,px1=840,py0=40,py1=430;
+  const s=Math.min((px1-px0)/(mxx-mnx),(py1-py0)/(mxy-mny));
+  const ox=px0+((px1-px0)-(mxx-mnx)*s)/2, oy=py0+((py1-py0)-(mxy-mny)*s)/2;
+  const P=(a,b)=>[ox+(a-mnx)*s, oy+(mxy-b)*s];
+  tf={mnx,mxx,mny,mxy,s,ox,oy};
+  const poly=(A,st,wd,op)=>{
+    const a=[]; for(let i=0;i<A.length;i+=2){const q=P(A[i].x,A[i].y); a.push(`${f(q[0],1)},${f(q[1],1)}`);}
+    const z=P(A[A.length-1].x,A[A.length-1].y); a.push(`${f(z[0],1)},${f(z[1],1)}`);
+    return `<polyline fill="none" points="${a.join(" ")}" stroke="${st}" stroke-width="${wd}" stroke-linecap="round" stroke-linejoin="round" opacity="${op}"/>`;
+  };
+
+  let out="";
+  if(fieldView){
+    // Either an image you loaded, or field.png sitting next to this file.
+    const src=O.img||"field.png";
+    const tl=P(-72,72), br=P(72,-72);
+    out+=`<image href="${src}" x="${f(tl[0],1)}" y="${f(tl[1],1)}" width="${f(br[0]-tl[0],1)}" height="${f(br[1]-tl[1],1)}" preserveAspectRatio="none" opacity="0.85"/>`;
+  }
+  if(fieldView){
+    for(let i=-72;i<=72;i+=24){
+      const a=P(i,-72), b2=P(i,72), c=P(-72,i), d2=P(72,i);
+      const hv=(i===0)?"var(--line2)":"var(--line)";
+      out+=`<line x1="${f(a[0],1)}" y1="${f(a[1],1)}" x2="${f(b2[0],1)}" y2="${f(b2[1],1)}" stroke="${hv}" stroke-width="1"/>`;
+      out+=`<line x1="${f(c[0],1)}" y1="${f(c[1],1)}" x2="${f(d2[0],1)}" y2="${f(d2[1],1)}" stroke="${hv}" stroke-width="1"/>`;
+    }
+  }
+  WP.forEach(p=>{const q=P(p.x,p.y);
+    out+=`<circle cx="${f(q[0],1)}" cy="${f(q[1],1)}" r="${f(p.er*s,1)}" fill="none" stroke="var(--grey)" stroke-width="1" stroke-dasharray="4 4"/>`;});
+  const th=norm(w.fh+(w.rev?180:0)), ux=Math.sin(th*D2R), uy=Math.cos(th*D2R);
+  const bk=Math.max(cur.tr*1.3,4);
+  const a1=P(w.x-bk*ux,w.y-bk*uy), a2=P(w.x+bk*0.15*ux,w.y+bk*0.15*uy);
+  out+=`<line x1="${f(a1[0],1)}" y1="${f(a1[1],1)}" x2="${f(a2[0],1)}" y2="${f(a2[1],1)}" stroke="var(--amber)" stroke-width="1.2" stroke-dasharray="6 5" opacity="0.75"/>`;
+  out+=poly(ghost.F,"var(--grey)",1.2,0.9);
+  out+=poly(F,"var(--teal)",2.4,1);
+
+  const rp=P(cur.x,cur.y), cp=P(cur.cx,cur.cy);
+  if(cur.ph==="drive"){
+    if(cur.frz){ const fx=P(cur.x+7*ux,cur.y+7*uy);
+      out+=`<line x1="${f(rp[0],1)}" y1="${f(rp[1],1)}" x2="${f(fx[0],1)}" y2="${f(fx[1],1)}" stroke="var(--amber-d)" stroke-width="1.8" stroke-dasharray="3 3"/>`;
+    } else {
+      out+=`<line x1="${f(rp[0],1)}" y1="${f(rp[1],1)}" x2="${f(cp[0],1)}" y2="${f(cp[1],1)}" stroke="var(--amber)" stroke-width="1.4"/>`;
+    }
+    out+=`<circle cx="${f(cp[0],1)}" cy="${f(cp[1],1)}" r="${f(Math.max(O.eps*s,0),1)}" fill="none" stroke="var(--amber-d)" stroke-width="1" stroke-dasharray="2 2"/>`;
+    out+=`<circle cx="${f(cp[0],1)}" cy="${f(cp[1],1)}" r="5" fill="${cur.frz?"var(--amber-d)":"var(--amber)"}"/>`;
+  }
+  const hd=cur.h*D2R, dx=Math.sin(hd), dy=-Math.cos(hd), nx=-dy, ny=dx;
+  out+=`<polygon points="${f(rp[0]+11*dx,1)},${f(rp[1]+11*dy,1)} ${f(rp[0]-7*dx+7*nx,1)},${f(rp[1]-7*dy+7*ny,1)} ${f(rp[0]-7*dx-7*nx,1)},${f(rp[1]-7*dy-7*ny,1)}" fill="var(--teal-d)"/>`;
+  const HIN=30/s;
+  WP.forEach((p,i)=>{
+    const q=P(p.x,p.y);
+    const e=P(p.x+HIN*Math.sin(p.fh*D2R), p.y+HIN*Math.cos(p.fh*D2R));
+    out+=`<line x1="${f(q[0],1)}" y1="${f(q[1],1)}" x2="${f(e[0],1)}" y2="${f(e[1],1)}" stroke="var(--amber-d)" stroke-width="1.6"/>`;
+    out+=`<circle cx="${f(e[0],1)}" cy="${f(e[1],1)}" r="5" fill="none" stroke="var(--amber-d)" stroke-width="1.8"/>`;
+    out+=`<circle cx="${f(q[0],1)}" cy="${f(q[1],1)}" r="5.5" fill="var(--fg2)"/>`;
+    out+=`<text class="t" x="${f(q[0]+11,1)}" y="${f(q[1]-10,1)}">${i+1}</text>`;});
+  const sp=P(O.sx,O.sy);
+  const se=P(O.sx+HIN*Math.sin(O.sh*D2R), O.sy+HIN*Math.cos(O.sh*D2R));
+  out+=`<line x1="${f(sp[0],1)}" y1="${f(sp[1],1)}" x2="${f(se[0],1)}" y2="${f(se[1],1)}" stroke="var(--teal-d)" stroke-width="1.6" stroke-dasharray="4 3"/>`;
+  out+=`<circle cx="${f(se[0],1)}" cy="${f(se[1],1)}" r="5" fill="none" stroke="var(--teal-d)" stroke-width="1.8"/>`;
+  out+=`<circle cx="${f(sp[0],1)}" cy="${f(sp[1],1)}" r="5.5" fill="none" stroke="var(--teal-d)" stroke-width="2.4"/>`;
+  out+=`<text class="t" x="${f(sp[0]+11,1)}" y="${f(sp[1]+18,1)}">start</text>`;
+  E("plot").innerHTML=out;
+
+  const Tm=F[F.length-1].t;
+  let tr=chart(F,70,34,760,82,[{get:p=>p.dh,c:"var(--amber)",w:1.4,d:true},{get:p=>p.h,c:"var(--teal)",w:2}],"heading and desired_heading, degrees",cur,Tm);
+  tr+=chart(F,70,166,760,60,[{get:p=>p.vc,c:"var(--grey)",w:1.2,d:true},{get:p=>p.v,c:"var(--teal)",w:2}],"velocity, inches per second",cur,Tm);
+  tr+=`<text class="t" x="70" y="246">0 s</text><text class="t" x="830" y="246" text-anchor="end">${f(Tm,2)} s</text>`;
+  E("traces").innerHTML=tr;
+
+  labelSliders();
+  E("vtick").textContent=f(cur.t,2)+" s";
+  E("legend").innerHTML=
+    "Teal: the path, and the robot's actual heading and velocity. "+
+    "Amber: the carrot, its approach line, and the heading it asks for; the dotted ring is CARROT_EPSILON_IN. "+
+    "Grey: the same waypoints with every lead at 0, and commanded velocity before motor lag. "+
+    "Dashed circles are each waypoint's exit_radius; dotted verticals on the traces are leg handoffs.";
+
+  const legRes=main.res.map((r,i)=>`${i+1}:${r}`).join(" ")+(main.tres?" turn:"+main.tres:"");
+  const cells=[
+    ["leg",`${cur.lg+1} of ${WP.length}`],["phase",cur.ph],["t",f(cur.t,2)+" s"],["distance_left",f(cur.dl,2)+" in"],
+    ["trail = dist × lead",f(cur.tr,2)+" in"],["carrot",`${f(cur.cx,1)}, ${f(cur.cy,1)}`],
+    ["robot to carrot",f(cur.tc,2)+" in"],["epsilon guard",cur.frz?"FROZEN":"off"],
+    ["desired_heading",f(cur.dh,1)+"°"],["heading",f(cur.h,1)+"°"],["turn_error",f(cur.te,1)+"°"],
+    ["cos scale",f(cur.sc,3)],
+    ["drive / turn",`${f(cur.dp,0)} / ${f(cur.tp,0)}%`],["velocity",f(cur.v,2)+" in/s"],
+    ["top speed / pivot",`${f(vmax(O),1)} in/s, ${f(pivotMax(O),0)}°/s`],
+    ["result",`${legRes} · ${f(main.total,2)} s`]
+  ];
+  E("ro").innerHTML=cells.map(c=>`<div>${c[0]}<b>${c[1]}</b></div>`).join("");
+}
+
+function save(){
+  try{ localStorage.setItem(KEY,JSON.stringify({O,WP}));
+       E("saved").textContent="saved "+new Date().toLocaleTimeString();
+  }catch(e){ E("saved").textContent="could not save to this browser"; }
+}
+function readKey(k){ try{ const t=localStorage.getItem(k); return t?JSON.parse(t):null; }catch(e){ return null; } }
+function applyState(d){
+  if(!d||!d.O||!Array.isArray(d.WP)||!d.WP.length) return false;
+  O=Object.assign({},CODE_O,d.O);
+  WP=d.WP.map(w=>Object.assign({x:0,y:0,lead:0,fh:0,er:2,stop:true,rev:false,tae:false},w));
+  return true;
+}
+function load(){ return applyState(readKey(KEY)) || applyState(readKey(DKEY)); }
+function haveDefaults(){ return readKey(DKEY)!==null; }
+function updateDefaultsUI(){
+  const b=E("resetmine");
+  if(!b) return;
+  const has=haveDefaults();
+  b.disabled=!has;
+  b.title=has?"restore the settings you saved":"save some defaults first";
+}
+function useDefaults(){
+  O=Object.assign({},CODE_O);
+  WP=JSON.parse(JSON.stringify(CODE_WP));
+}
+function resim(){ cache=null; E("tick").value=0; draw(); save(); }
+
+buildSliders();
+if(!load()) useDefaults();
+syncSliders(); syncBar(); rows(); draw();
+
+for(const id in SPECS) for(const s of SPECS[id]){
+  E(s[0]).addEventListener("input",e=>{ O[s[0]]=+e.target.value; resim(); });
+}
+E("wps").addEventListener("input",()=>{ if(readRows()) resim(); });
+E("wps").addEventListener("click",e=>{
+  if(e.target.dataset&&e.target.dataset.act==="del"){
+    if(WP.length<2){E("err").textContent="a path needs at least one waypoint";return;}
+    WP.splice(+e.target.parentNode.dataset.i,1); E("err").textContent=""; rows(); resim();
+  }
+});
+E("addwp").addEventListener("click",()=>{
+  const l=WP[WP.length-1];
+  WP.push({x:l.x+12,y:l.y+6,lead:O.deflead,fh:l.fh,er:O.finr,stop:true,rev:false,tae:false});
+  if(WP.length>1) WP[WP.length-2].stop=false;
+  E("err").textContent=""; rows(); resim();
+});
+E("delpath").addEventListener("click",()=>{
+  WP=[JSON.parse(JSON.stringify(WP[WP.length-1]))]; E("err").textContent=""; rows(); resim();
+});
+E("export").addEventListener("click",()=>{
+  const txt=JSON.stringify({O,WP},null,2);
+  navigator.clipboard?.writeText(txt).then(
+    ()=>E("saved").textContent="settings copied to clipboard",
+    ()=>E("saved").textContent="copy failed — see console") || console.log(txt);
+  console.log(txt);
+});
+// ---- click and drag path editing -------------------------------------------
+function svgXY(ev){
+  const r=E("plot").getBoundingClientRect(), k=900/r.width;
+  return [(ev.clientX-r.left)*k, (ev.clientY-r.top)*k];
+}
+function fieldXY(px,py){ return [tf.mnx+(px-tf.ox)/tf.s, tf.mxy-(py-tf.oy)/tf.s]; }
+function rnd(v,q){ return Math.round(v/q)*q; }
+function syncRow(i){
+  if(i<0){
+    ["sx","sy","sh"].forEach(k=>{ const el=E(k); if(el) el.value=O[k]; });
+    const srow=document.querySelector('#wps .wr[data-i="-1"]');
+    if(srow){ const m={x:"sx",y:"sy",fh:"sh"};
+              srow.querySelectorAll("input").forEach(el=>{ const k=el.dataset.k;
+                if(m[k]!==undefined) el.value=O[m[k]]; }); }
+    labelSliders(); return;
+  }
+  const row=document.querySelector(`#wps .wr[data-i="${i}"]`);
+  if(!row) return;
+  ["x","y","fh"].forEach(k=>{ const el=row.querySelector(`[data-k="${k}"]`); if(el) el.value=WP[i][k]; });
+}
+E("plot").addEventListener("pointerdown",ev=>{
+  if(!tf) return;
+  const [px,py]=svgXY(ev);
+  const HIN=30/tf.s;
+  for(let i=0;i<WP.length;i++){
+    const p=WP[i];
+    const q=[tf.ox+(p.x-tf.mnx)*tf.s, tf.oy+(tf.mxy-p.y)*tf.s];
+    const ex=p.x+HIN*Math.sin(p.fh*D2R), ey=p.y+HIN*Math.cos(p.fh*D2R);
+    const e=[tf.ox+(ex-tf.mnx)*tf.s, tf.oy+(tf.mxy-ey)*tf.s];
+    if(Math.hypot(px-e[0],py-e[1])<16){ startDrag(ev,i,"head"); return; }
+    if(Math.hypot(px-q[0],py-q[1])<16){ startDrag(ev,i,"move"); return; }
+  }
+  const sq=[tf.ox+(O.sx-tf.mnx)*tf.s, tf.oy+(tf.mxy-O.sy)*tf.s];
+  const sex=O.sx+HIN*Math.sin(O.sh*D2R), sey=O.sy+HIN*Math.cos(O.sh*D2R);
+  const se=[tf.ox+(sex-tf.mnx)*tf.s, tf.oy+(tf.mxy-sey)*tf.s];
+  if(Math.hypot(px-se[0],py-se[1])<16){ startDrag(ev,-1,"head"); return; }
+  if(Math.hypot(px-sq[0],py-sq[1])<16){ startDrag(ev,-1,"move"); return; }
+});
+function startDrag(ev,i,mode){
+  drag={i,mode};
+  E("plot").classList.add("grabbing");
+  try{ E("plot").setPointerCapture(ev.pointerId); }catch(e){}
+  if(i>=0){ const row=document.querySelector(`#wps .wr[data-i="${i}"]`);
+            if(row) row.scrollIntoView({block:"nearest"}); }
+}
+E("plot").addEventListener("dblclick",ev=>{
+  if(!tf) return;
+  const [px,py]=svgXY(ev);
+  if(px<50||px>850||py<30||py>440) return;
+  const [fx,fy]=fieldXY(px,py);
+  const last=WP[WP.length-1];
+  WP.push({x:rnd(fx,0.5),y:rnd(fy,0.5),lead:O.deflead,fh:last.fh,er:O.finr,stop:true,rev:false,tae:false});
+  if(WP.length>1) WP[WP.length-2].stop=false;
+  rows(); resim();
+});
+E("plot").addEventListener("pointermove",ev=>{
+  if(!drag||!tf) return;
+  const [px,py]=svgXY(ev);
+  const [fx,fy]=fieldXY(px,py);
+  if(drag.i<0){
+    if(drag.mode==="move"){ O.sx=rnd(fx,0.5); O.sy=rnd(fy,0.5); }
+    else{ O.sh=rnd(norm(90-Math.atan2(fy-O.sy,fx-O.sx)*R2D),1); }
+    syncRow(-1);
+  } else {
+    const p=WP[drag.i];
+    if(drag.mode==="move"){ p.x=rnd(fx,0.5); p.y=rnd(fy,0.5); }
+    else{ p.fh=rnd(norm(90-Math.atan2(fy-p.y,fx-p.x)*R2D),1); }
+    syncRow(drag.i);
+  }
+  cache=null; draw();
+});
+function endDrag(ev){
+  if(!drag) return;
+  drag=null;
+  E("plot").classList.remove("grabbing");
+  try{ E("plot").releasePointerCapture(ev.pointerId); }catch(e){}
+  resim();
+}
+E("plot").addEventListener("pointerup",endDrag);
+E("plot").addEventListener("pointercancel",endDrag);
+E("fieldview").addEventListener("click",()=>{
+  fieldView=!fieldView;
+  E("fieldview").textContent=fieldView?"Fit to path":"Field view";
+  cache=null; draw();
+});
+
+// ---- C++ export ------------------------------------------------------------
+function cppPath(){
+  const NL=String.fromCharCode(10);
+  const near=(x,y)=>Math.abs(x-y)<1e-9;
+  const er=v=>near(v,O.wpr)?"WAYPOINT_RADIUS":near(v,O.finr)?"FINAL_RADIUS":f(v,2);
+  const ld=v=>near(v,O.deflead)?"BOOMERANG_LEAD":f(v,3);
+  const g=(kp,ki,kd)=>"{"+f(kp,2)+", "+f(ki,2)+", "+f(kd,2)+"}";
+  const L=[];
+
+  L.push("// ===== src/main.cpp, in the anonymous namespace =====================");
+  L.push("constexpr PidGains DRIVE_GAINS      "+g(O.dkp,O.dki,O.dkd)+";");
+  L.push("constexpr PidGains CORDON_TURN_GAINS"+g(O.tkp,O.tki,O.tkd)+";");
+  L.push("constexpr PidGains TURN_GAINS       "+g(O.fkp,O.fki,O.fkd)+";");
+  L.push("");
+  L.push("constexpr double WAYPOINT_RADIUS = "+f(O.wpr,2)+";");
+  L.push("constexpr double FINAL_RADIUS    = "+f(O.finr,2)+";");
+  L.push("constexpr double BOOMERANG_LEAD  = "+f(O.deflead,3)+";");
+  L.push("constexpr double DRIVE_TIMEOUT   = "+f(O.dto,1)+";");
+  L.push("");
+  L.push("// ===== src/main.cpp, in initialize() ================================");
+  L.push("    robot.odometry().set_pose("+f(O.sx,1)+", "+f(O.sy,1)+", "+f(O.sh,1)+", -1.0);");
+  L.push("");
+  L.push("// ===== src/main.cpp, in autonomous() ================================");
+  L.push("    const CordonRequest path[] = {");
+  WP.forEach(w=>{
+    L.push("        {");
+    L.push("            .x                = "+f(w.x,1)+",");
+    L.push("            .y                = "+f(w.y,1)+",");
+    L.push("            .drive_gains      = DRIVE_GAINS,");
+    L.push("            .turn_gains       = CORDON_TURN_GAINS,");
+    L.push("            .final_turn_gains = TURN_GAINS,");
+    L.push("            .drive_timeout    = DRIVE_TIMEOUT,");
+    L.push("            .exit_radius      = "+er(w.er)+",");
+    L.push("            .stop_at_end      = "+(w.stop?"true":"false")+",");
+    L.push("            .turn_at_end      = "+(w.tae?"true":"false")+",");
+    L.push("            .final_heading    = "+f(w.fh,1)+",");
+    L.push("            .lead             = "+ld(w.lead)+",");
+    if(w.rev) L.push("            .reverse          = true,");
+    L.push("        },");
+  });
+  L.push("    };");
+  L.push("");
+  L.push("    const MotionResult result = run_path(robot.drivetrain(), path);");
+  L.push("");
+  L.push("// ===== src/drive.cpp, in the anonymous namespace ====================");
+  L.push("constexpr double MIN_HEADING_SCALE = "+f(O.mhs,2)+";");
+  L.push("constexpr double MAX_LEAD          = "+f(O.maxlead,2)+";");
+  L.push("constexpr double CARROT_EPSILON_IN = "+f(O.eps,2)+";");
+  L.push("constexpr std::size_t CORDON_HEADING_SMOOTHING = "+f(O.hsm,0)+";");
+  L.push("");
+  L.push("// ===== include/robot/drive.hpp, Drivetrain =========================="); 
+  L.push("    DriveTuning cordon_tuning_{"+f(O.dsm,0)+", "+f(O.dsl,1)+"};");
+  L.push("");
+  L.push("// Not in the firmware, simulation only: wheel "+f(O.wheel,2)+" in, track "+
+         f(O.track,1)+" in, ratio "+f(O.ratio,2)+", motor lag "+f(O.tau,2)+" s,");
+  L.push("// giving "+f(vmax(O),1)+" in/s top speed and "+f(pivotMax(O),0)+" deg/s max pivot.");
+  return L.join(NL);
+}
+E("cppcopy").addEventListener("click",()=>{
+  const txt=cppPath();
+  console.log(txt);
+  if(navigator.clipboard){
+    navigator.clipboard.writeText(txt).then(
+      ()=>E("cppmsg").textContent="copied - constants and path",
+      ()=>E("cppmsg").textContent="copy blocked - the code is in the browser console (F12)");
+  } else E("cppmsg").textContent="the code is in the browser console (F12)";
+});
+
+// ---- field image -----------------------------------------------------------
+E("fieldimg").addEventListener("change",ev=>{
+  const file=ev.target.files&&ev.target.files[0];
+  if(!file) return;
+  const fr=new FileReader();
+  fr.onload=()=>{
+    const im=new Image();
+    im.onload=()=>{
+      const MAX=1200;
+      const k=Math.min(1,MAX/Math.max(im.width,im.height));
+      const c=document.createElement("canvas");
+      c.width=Math.round(im.width*k); c.height=Math.round(im.height*k);
+      c.getContext("2d").drawImage(im,0,0,c.width,c.height);
+      O.img=c.toDataURL("image/jpeg",0.82);
+      if(!fieldView){ fieldView=true; E("fieldview").textContent="Fit to path"; }
+      cache=null; draw();
+      try{ localStorage.setItem(KEY,JSON.stringify({O,WP}));
+           E("saved").textContent="field image saved"; }
+      catch(e){ E("saved").textContent="image too large to save - it will reload blank"; }
+    };
+    im.src=fr.result;
+  };
+  fr.readAsDataURL(file);
+});
+E("clearimg").addEventListener("click",()=>{ O.img=""; cache=null; draw(); save(); });
+
+// ---- import from PATH.JERRYIO ----------------------------------------------
+// The named constants come from main.cpp, so a pasted export that still says
+// WAYPOINT_RADIUS resolves instead of dropping the point.
+function cppNames(){ return {WAYPOINT_RADIUS:O.wpr, FINAL_RADIUS:O.finr, BOOMERANG_LEAD:O.deflead}; }
+
+function fieldOf(block,key){
+  const i=block.indexOf("."+key);
+  if(i<0) return null;
+  const eq=block.indexOf("=",i);
+  if(eq<0) return null;
+  let end=block.indexOf(",",eq);
+  if(end<0) end=block.length;
+  return block.slice(eq+1,end).trim();
+}
+function numOf(block,key,dflt){
+  const raw=fieldOf(block,key);
+  if(raw===null) return dflt;
+  const names=cppNames();
+  if(Object.prototype.hasOwnProperty.call(names,raw)) return names[raw];
+  const v=parseFloat(raw);
+  return isNaN(v)?dflt:v;
+}
+function boolOf(block,key,dflt){
+  const raw=fieldOf(block,key);
+  if(raw===null) return dflt;
+  return raw.indexOf("true")>=0;
+}
+function parseCordon(text){
+  const out=[];
+  const blocks=text.split("},");
+  for(const b of blocks){
+    if(b.indexOf(".x")<0||b.indexOf(".y")<0) continue;
+    const x=numOf(b,"x",null), y=numOf(b,"y",null);
+    if(x===null||y===null) continue;
+    out.push({
+      x, y,
+      lead: numOf(b,"lead",0.5),
+      fh:   numOf(b,"final_heading",0),
+      er:   Math.max(0.25,numOf(b,"exit_radius",2)),
+      stop: boolOf(b,"stop_at_end",true),
+      rev:  boolOf(b,"reverse",false),
+      tae:  boolOf(b,"turn_at_end",false)
+    });
+  }
+  return out;
+}
+E("loadpaste").addEventListener("click",()=>{
+  const txt=E("paste").value;
+  const got=parseCordon(txt);
+  if(!got.length){
+    E("pastemsg").textContent="no CordonRequest blocks found in that text";
+    return;
+  }
+  WP=got;
+  const big=WP.filter(w=>w.lead>1).length;
+  E("pastemsg").textContent=big>0
+    ? got.length+" points loaded - "+big+" had lead above 1, the Speed box was probably left at 30"
+    : got.length+" points loaded";
+  E("err").textContent="";
+  rows(); resim();
+});
+
+// ---- defaults bar ----------------------------------------------------------
+E("savedef").addEventListener("click",()=>{
+  try{
+    localStorage.setItem(DKEY,JSON.stringify({O,WP}));
+    E("barmsg").textContent="saved as your defaults";
+  }catch(e){ E("barmsg").textContent="could not save - browser storage is full or blocked"; }
+  updateDefaultsUI();
+});
+E("resetmine").addEventListener("click",()=>{
+  if(applyState(readKey(DKEY))){
+    syncSliders(); syncBar(); rows(); E("err").textContent="";
+    E("barmsg").textContent="back to your defaults"; resim();
+  } else E("barmsg").textContent="nothing saved yet";
+});
+E("resetcode").addEventListener("click",()=>{
+  useDefaults(); syncSliders(); syncBar(); rows(); E("err").textContent="";
+  E("barmsg").textContent="back to the values in main.cpp"; resim();
+});
+updateDefaultsUI();
+
+// ---- per-waypoint defaults -------------------------------------------------
+["wpr","finr","deflead"].forEach(k=>{
+  const el=E(k);
+  el.value=O[k];
+  el.addEventListener("input",()=>{
+    if(el.value===""||isNaN(+el.value)) return;
+    O[k]=+el.value; E("defmsg").textContent=""; save();
+  });
+});
+E("applydef").addEventListener("click",()=>{
+  WP.forEach((w,i)=>{
+    const last = i===WP.length-1;
+    w.er   = last ? O.finr : O.wpr;
+    w.stop = last;
+    w.lead = O.deflead;
+    if(!last) w.tae = false;
+  });
+  E("defmsg").textContent = WP.length>1
+    ? (WP.length-1)+" pass-through at "+f(O.wpr,2)+" in, last stops at "+f(O.finr,2)+" in"
+    : "single point, stops at "+f(O.finr,2)+" in";
+  rows(); resim();
+});
+
+// ---- path files ------------------------------------------------------------
+const NAME_OK="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
+function safeName(t){
+  let out="";
+  for(let i=0;i<t.length;i++) out += NAME_OK.indexOf(t[i])>=0 ? t[i] : "_";
+  return out.length ? out : "path";
+}
+function pathFileText(){
+  // The field image is left out on purpose: it is a few hundred KB of data URL
+  // and field.png next to this file covers it.
+  const slim={}; for(const k in O) if(k!=="img") slim[k]=O[k];
+  return JSON.stringify({
+    kind:"cordon-sim-path", version:1,
+    name:E("pathname").value, savedAt:new Date().toISOString(),
+    O:slim, WP
+  },null,2);
+}
+E("savefile").addEventListener("click",()=>{
+  const nm=safeName(E("pathname").value)+".json";
+  try{
+    const url=URL.createObjectURL(new Blob([pathFileText()],{type:"application/json"}));
+    const a=document.createElement("a");
+    a.href=url; a.download=nm;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    E("saved").textContent="saved "+nm;
+  }catch(e){ E("saved").textContent="could not save the file"; }
+});
+E("openfile").addEventListener("change",ev=>{
+  const file=ev.target.files&&ev.target.files[0];
+  if(!file) return;
+  const fr=new FileReader();
+  fr.onload=()=>{
+    let d=null;
+    try{ d=JSON.parse(fr.result); }catch(e){ E("saved").textContent="that file is not valid JSON"; return; }
+    const keepImg=O.img;
+    if(!applyState(d)){ E("saved").textContent="no path found in that file"; return; }
+    O.img=keepImg;
+    if(typeof d.name==="string") E("pathname").value=d.name;
+    syncSliders(); syncBar(); rows(); E("err").textContent="";
+    E("saved").textContent="opened "+file.name+" - "+WP.length+" waypoints";
+    resim();
+  };
+  fr.readAsText(file);
+  ev.target.value="";
+});
+
+E("tick").addEventListener("input",draw);
+E("play").addEventListener("click",()=>{
+  if(timer){clearInterval(timer);timer=null;E("play").textContent="Play";return;}
+  E("play").textContent="Pause";
+  timer=setInterval(()=>{const tk=E("tick");let v=+tk.value+2;if(v>+tk.max)v=0;tk.value=v;draw();},40);
+});
+</script>
+</body>
+</html>

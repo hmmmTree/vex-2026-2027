@@ -19,7 +19,7 @@ void Hardware::configure() {
 
     xrot.reset();
     yrot.reset();
-    yrot.set_reversed(true);
+    yrot.set_reversed(false);
 }
 
 }

@@ -1,0 +1,104 @@
+PATH.JERRYIO -> cordon() output template
+========================================
+
+Setup on path.jerryio.com, once:
+
+  1. Format            -> "Move-to-Point Code Gen v0.1"
+  2. Unit of Length    -> Inch          (it defaults to Centimeter)
+  3. Coordinate System -> whatever matches your set_pose() origin
+  4. Click "Edit Template", replace everything with the block below, Save
+  5. Draw the path, then "Copy Code" (or Shift+Ctrl+C) and paste into autonomous()
+
+The path config "speed" slider is wired to .lead, so dragging speed on a path
+sets its boomerang lead. Its range is 0..1 and cordon() clamps at MAX_LEAD 0.9.
+
+
+--- copy from the next line -------------------------------------------------
+path: `    // ${name}
+    const CordonRequest path[] = {
+${code}    };
+
+    const MotionResult result = run_path(robot.drivetrain(), path);
+`
+moveToPoint: `        {
+            .x                = ${x},
+            .y                = ${y},
+            .drive_gains      = DRIVE_GAINS,
+            .turn_gains       = CORDON_TURN_GAINS,
+            .final_turn_gains = TURN_GAINS,
+            .drive_timeout    = DRIVE_TIMEOUT,
+            .exit_radius      = WAYPOINT_RADIUS,
+            .stop_at_end      = false,
+            .turn_at_end      = false,
+            .final_heading    = ${heading},
+            .lead             = ${speed},
+        },`
+--- copy to the previous line -----------------------------------------------
+
+
+After pasting, edit the LAST block only:
+
+    .exit_radius   = WAYPOINT_RADIUS  ->  FINAL_RADIUS
+    .stop_at_end   = false            ->  true
+    .turn_at_end   = false            ->  true   (only if you want the pivot)
+
+Those three are the same for every point because the template substitution
+only exposes x, y, heading and speed. Making them per-point needs the fork.
+
+
+Headings work without conversion. PATH.JERRYIO emits 0..360; cordon() calls
+normalise_angle() on final_heading before using it, so 270 becomes -90 on its
+own. No need to rewrite them by hand.
+
+Units do NOT convert themselves. If the unit of length is left at Centimeter
+you will get centimetre numbers in a field that cordon() reads as inches, and
+the robot will drive 2.54x short. Set it to Inch.
+
+
+ONE PATH ONLY (or use the variant below)
+========================================
+
+The `path:` template wraps EACH path in path.jerryio. With two paths on the
+canvas you get two "const CordonRequest path[] = {" declarations and the code
+will not compile.
+
+Because lead comes from the per-path Speed field, you only need more than one
+path if you want different leads on different points. In that case use this
+variant, which emits bare blocks and no wrapper, then write the array yourself:
+
+--- variant: bare blocks, multiple paths ------------------------------------
+path: `${code}`
+moveToPoint: `        {
+            .x                = ${x},
+            .y                = ${y},
+            .drive_gains      = DRIVE_GAINS,
+            .turn_gains       = CORDON_TURN_GAINS,
+            .final_turn_gains = TURN_GAINS,
+            .drive_timeout    = DRIVE_TIMEOUT,
+            .exit_radius      = WAYPOINT_RADIUS,
+            .stop_at_end      = false,
+            .turn_at_end      = false,
+            .final_heading    = ${heading},
+            .lead             = ${speed},
+        },`
+-----------------------------------------------------------------------------
+
+Paste the result between your own:
+
+    const CordonRequest path[] = {
+        ... paste here ...
+    };
+
+Order follows the path list in the left panel, top to bottom.
+
+
+SPEED FIELD DEFAULT
+===================
+
+The Speed box in the Path panel defaults to 30, not to a lead value. Set it to
+your lead (0.5) or every point exports .lead = 30. cordon() clamps that to
+MAX_LEAD 0.9, so the robot still runs, it just swings far wider than intended.
+
+Check the first export: the number in .lead should match what you typed in the
+Speed box exactly. If it does not, the field is applying a unit conversion and
+the template needs a literal instead.

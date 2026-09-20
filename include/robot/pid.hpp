@@ -27,7 +27,9 @@ public:
 
     void reset();
 
-    // `dt` is the time since the preious update, in seconds.
+    // `dt` is the time since the previous update, in seconds. Gains are in
+    // per-tick units (one tick = LOOP_INTERVAL_S), so kd multiplies the error
+    // change per loop and ki multiplies the running sum of error per loop.
     double update(double error, double dt = LOOP_INTERVAL_S);
 
     double output() const { return output_; }

@@ -159,6 +159,16 @@ void Odometry::run() {
         const bool display_due = ++display_counter >= DISPLAY_EVERY_TICKS;
         if (display_due) display_counter = 0;
 
+        // The heading is an absolute reading, not something integrated, so it
+        // is published as soon as it is read. It used to be assigned only
+        // inside the guarded block below, which meant any skipped iteration -
+        // a failed tracker read, a rejected interval, a missed lock - left it
+        // frozen while the robot kept turning, and the next good tick snapped
+        // it forward by everything that had accumulated. A control loop
+        // differentiating that sees a step, not a turn rate.
+        double     raw_h = hw_.inertial.get_heading();
+        const bool h_ok  = std::isfinite(raw_h);
+
         double curr_x = 0.0;
         double curr_y = 0.0;
         const bool x_ok = read_ticks(hw_.xrot, curr_x);
@@ -168,14 +178,18 @@ void Odometry::run() {
         // integrate. The IMU is not: with it absent the heading simply holds
         // whatever set_pose() seeded, which is all straight-line work needs.
         if (!x_ok || !y_ok) {
+            // The heading is still good. Leaving it frozen here is what made it
+            // snap forward by the whole accumulated turn on the next good tick.
+            if (h_ok && lock_.take(50)) {
+                ReleaseOnExit guard(lock_);
+                heading_ = normalise_angle(raw_h + heading_offset_);
+            }
             if (display_due) {
                 pros::lcd::print(2, "ODOM no data: %s%s", x_ok ? "" : "X ", y_ok ? "" : "Y");
             }
             continue;
         }
 
-        double     raw_h = hw_.inertial.get_heading();
-        const bool h_ok  = std::isfinite(raw_h);
         if (!h_ok) raw_h = have_prev_h ? prev_raw_h : 0.0;
 
         // The first good sample only seeds the reference; there is no interval
@@ -201,22 +215,30 @@ void Odometry::run() {
                                  std::abs(delta_y_in) > config_.tolerance ||
                                  std::abs(delta_h)    > config_.tolerance_heading;
 
-        if (!implausible && lock_.take(50)) {
+        // One lock for both updates, not two: the control loop asks for the
+        // pose on the same 20 ms cadence this task runs on, and every extra
+        // take is another chance for one of them to wait on the other.
+        // The heading is an absolute reading, so it is published whatever the
+        // interval did; only the integrated position is gated on plausibility.
+        if (lock_.take(50)) {
             ReleaseOnExit guard(lock_);
 
-            const double curr_h      = normalise_angle(raw_h + heading_offset_);
-            const double delta_h_rad = delta_h * deg2rad;
+            const double curr_h = normalise_angle(raw_h + heading_offset_);
+            if (h_ok) heading_ = curr_h;
 
-            // Each tracker sits off the tracking centre, so a pure rotation
-            // sweeps it through an arc that is not real translation.
-            const double delta_x = delta_x_in - delta_h_rad * config_.x_tracker_offset;
-            const double delta_y = delta_y_in + delta_h_rad * config_.y_tracker_offset;
+            if (!implausible) {
+                const double delta_h_rad = delta_h * deg2rad;
 
-            const double theta = -curr_h * deg2rad;
+                // Each tracker sits off the tracking centre, so a pure rotation
+                // sweeps it through an arc that is not real translation.
+                const double delta_x = delta_x_in - delta_h_rad * config_.x_tracker_offset;
+                const double delta_y = delta_y_in + delta_h_rad * config_.y_tracker_offset;
 
-            x_ += delta_x * std::cos(theta) - delta_y * std::sin(theta);
-            y_ += delta_x * std::sin(theta) + delta_y * std::cos(theta);
-            heading_ = curr_h;
+                const double theta = -curr_h * deg2rad;
+
+                x_ += delta_x * std::cos(theta) - delta_y * std::sin(theta);
+                y_ += delta_x * std::sin(theta) + delta_y * std::cos(theta);
+            }
         }
 
         prev_x     = curr_x;

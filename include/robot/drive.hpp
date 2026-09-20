@@ -87,6 +87,7 @@ public:
 
     void stop();
     void set_brake_mode(pros::motor_brake_mode_e mode);
+    void reverse();
 
     // --- autonomous motions -----------------------------------------------
 

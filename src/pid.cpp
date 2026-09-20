@@ -33,13 +33,21 @@ void Pid::reset() {
 double Pid::update(double error, double dt) {
     if (!(dt > 0.0)) dt = LOOP_INTERVAL_S;
 
+    // Gains are in per-tick units, the way most VEX tuning guides assume: the
+    // derivative is the error change over one 20 ms loop and the integral adds
+    // one error sample per loop. Dividing by dt in seconds instead made the D
+    // term 50x larger than a guide-sized kd expects, so it amplified sensor
+    // noise and caused oscillation as soon as kd was raised. `ticks` corrects
+    // for a loop that ran longer or shorter than nominal.
+    const double ticks = dt / LOOP_INTERVAL_S;
+
     if (!has_prev_) {
         prev_error_ = error;
         has_prev_   = true;
     }
 
     for (std::size_t i = smoothing_; i-- > 1;) history_[i] = history_[i - 1];
-    history_[0] = (error - prev_error_) / dt;
+    history_[0] = (error - prev_error_) / ticks;
 
     derivative_ = 0.0;
     for (std::size_t i = 0; i < smoothing_; i++) derivative_ += history_[i];
@@ -50,7 +58,7 @@ double Pid::update(double error, double dt) {
     }
 
     if (limits_.zone > 0.0 && std::fabs(error) < limits_.zone) {
-        integral_ += error * dt;
+        integral_ += error * ticks;
         if (gains_.ki != 0.0 && limits_.max > 0.0) {
             const double limit = std::fabs(limits_.max / gains_.ki);
             integral_ = std::clamp(integral_, -limit, limit);
