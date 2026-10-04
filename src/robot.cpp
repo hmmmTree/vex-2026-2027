@@ -8,7 +8,9 @@ Robot& Robot::instance() {
 }
 
 Robot::Robot()
-    : odometry_(hardware_),
+    : intake_(hardware_),
+      lift_(hardware_),
+      odometry_(hardware_),
       drivetrain_(hardware_, odometry_, interrupts_),
       vision_(hardware_, odometry_),
       diagnostics_(hardware_) {}

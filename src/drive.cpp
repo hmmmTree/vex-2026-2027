@@ -25,6 +25,11 @@ constexpr int DRIVE_DISPLAY_EVERY_TICKS = 5;
 
 constexpr double MIN_HEADING_SCALE = 0.0;
 
+// Beyond this heading error cordon pivots in place before driving. Driving while
+// badly misaligned carries the robot off along its old heading, and the turn
+// PID cannot pull it back before the target.
+constexpr double PIVOT_FIRST_DEG = 30.0;
+
 // The odometry task publishes on its own cadence, which is its 20 ms delay plus
 // three smart-port device reads. The control loop samples at a flat 20 ms, so
 // it sees the same heading twice and then a double-sized step. Differentiating
@@ -81,8 +86,8 @@ void Drivetrain::reverse() {
 }
 
 void Drivetrain::set_brake_mode(pros::motor_brake_mode_e mode) {
-    hw_.left.set_brake_mode(mode);
-    hw_.right.set_brake_mode(mode);
+    hw_.left.set_brake_mode_all(mode);
+    hw_.right.set_brake_mode_all(mode);
 }
 
 void Drivetrain::arcade(int forward, int rotate, double scale) {
@@ -319,9 +324,15 @@ MotionResult Drivetrain::cordon(const CordonRequest& request) {
         osc_prevms = now_ms;
         osc_haveh  = true;
 
-        double drive_power = distance.update(distance_left);
-
-        drive_power *= std::max(MIN_HEADING_SCALE, std::cos(turn_error * deg2rad));
+        double drive_power = 0.0;
+        if (std::fabs(turn_error) > PIVOT_FIRST_DEG) {
+            // Reset so the slew ramps drive up from zero once aligned instead
+            // of jumping straight to whatever it would have built up meanwhile
+            distance.reset();
+        } else {
+            drive_power  = distance.update(distance_left);
+            drive_power *= std::max(MIN_HEADING_SCALE, std::cos(turn_error * deg2rad));
+        }
         if (request.reverse) drive_power = -drive_power;
 
         double left  = drive_power + turn_power;

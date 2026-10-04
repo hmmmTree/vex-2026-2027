@@ -4,8 +4,10 @@
 #include "robot/drive.hpp"
 #include "robot/hardware.hpp"
 #include "robot/interrupt.hpp"
+#include "robot/lift.hpp"
 #include "robot/odometry.hpp"
 #include "robot/vision.hpp"
+#include "robot/intake.hpp"
 
 namespace robot {
 
@@ -22,14 +24,17 @@ public:
     Drivetrain&        drivetrain()  { return drivetrain_; }
     AprilTagLocalizer& vision()      { return vision_; }
     Diagnostics&       diagnostics() { return diagnostics_; }
-
+    Intake&            intake()      { return intake_; }
+    Lift&              lift()        { return lift_; }
 private:
     Robot();
 
     // Declaration order is construction order, and the constructors below take
     // references to each other do not reordr these.
     Hardware          hardware_;
+    Intake            intake_;
     Interrupts        interrupts_;
+    Lift              lift_;
     Odometry          odometry_;
     Drivetrain        drivetrain_;
     AprilTagLocalizer vision_;

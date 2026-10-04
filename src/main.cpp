@@ -1,5 +1,6 @@
 #include "main.h"
 
+#include "pros/misc.h"
 #include "pros/rtos.hpp"
 #include "robot/robot.hpp"
 
@@ -133,46 +134,75 @@ constexpr PidGains TURN_GAINS       {0.60, 0.00, 1.25};
 
 // ===== src/main.cpp, in autonomous() ================================
     const CordonRequest path[] = {
+        
         {
-            .x                = 15.5,
-            .y                = -54.2,
+            .x                = 0,
+            .y                = -50.2,
             .drive_gains      = DRIVE_GAINS,
             .turn_gains       = CORDON_TURN_GAINS,
             .final_turn_gains = TURN_GAINS,
             .drive_timeout    = DRIVE_TIMEOUT,
-            .exit_radius      = 1.75,
-            .stop_at_end      = false,
+            .exit_radius      = 2,
+            .stop_at_end      = true,   // next point reverses; don't carry forward momentum into it
             .turn_at_end      = false,
-            .final_heading    = 0.0,
+            .final_heading    = 90,
             .lead             = BOOMERANG_LEAD,
         },
         /*
         {
-            .x                = -9.5,
-            .y                = -54.2,
+            .x                = 0,
+            .y                = -48,
             .drive_gains      = DRIVE_GAINS,
             .turn_gains       = CORDON_TURN_GAINS,
             .final_turn_gains = TURN_GAINS,
             .drive_timeout    = DRIVE_TIMEOUT,
-            .exit_radius      = 3.50,
+            .exit_radius      = 2.50,
             .stop_at_end      = false,
             .turn_at_end      = false,
-            .final_heading    = 100.0,
-            .lead             = 0.000,
+            .final_heading    = 135.0,
+            .lead             = BOOMERANG_LEAD,
+            .reverse          = true,
         },
+        */
+        ///*
         {
-            .x                = 16.9,
-            .y                = -56.0,
+            .x                = -10.5,
+            .y                = -61.2,
+            .drive_gains      = DRIVE_GAINS,
+            .turn_gains       = CORDON_TURN_GAINS,
+            .final_turn_gains = TURN_GAINS,
+            .drive_timeout    = DRIVE_TIMEOUT,
+            .exit_radius      = 2,
+            .stop_at_end      = true,
+            .turn_at_end      = false,
+            .final_heading    = 45.0,
+            .lead             = BOOMERANG_LEAD,
+            .reverse          = true,
+        },
+    };
+
+    const MotionResult result = run_path(robot.drivetrain(), path);
+    robot.drivetrain().stop();
+    robot.diagnostics().show_result("auton", result, interrupts);
+
+    pros::delay(500);
+        
+    const CordonRequest path2[] = {
+        
+        {
+            .x                = -17.0,
+            .y                = -54.6,
             .drive_gains      = DRIVE_GAINS,
             .turn_gains       = CORDON_TURN_GAINS,
             .final_turn_gains = TURN_GAINS,
             .drive_timeout    = DRIVE_TIMEOUT,
             .exit_radius      = 1.00,
             .stop_at_end      = true,
-            .turn_at_end      = false,
-            .final_heading    = 45.0,
+            .turn_at_end      = true,
+            .final_heading    = -65.0,
             .lead             = BOOMERANG_LEAD,
         },
+        /*
         {
             .x                = 16.3,
             .y                = -30.9,
@@ -231,10 +261,10 @@ constexpr PidGains TURN_GAINS       {0.60, 0.00, 1.25};
     };
 
 
-    const MotionResult result = run_path(robot.drivetrain(), path);
 
+    const MotionResult result2 = run_path(robot.drivetrain(), path2);
     robot.drivetrain().stop();
-    robot.diagnostics().show_result("auton", result, interrupts);
+    robot.diagnostics().show_result("auton", result2, interrupts);
   
 /*   
     const MotionResult result =
@@ -266,9 +296,13 @@ void opcontrol() {
         if (master.get_digital(pros::E_CONTROLLER_DIGITAL_DOWN)) speed = speed*-1.0;
 
         if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_B)) {
-            run_interruptible_macro();
-            drivetrain.set_brake_mode(pros::E_MOTOR_BRAKE_COAST);
+            drivetrain.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
         }
+
+        if(master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_A)) robot.lift().grippertoggle();
+
+        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_X)) robot.lift().armtoggle();
+
 
         
 
