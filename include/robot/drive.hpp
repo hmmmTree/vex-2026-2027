@@ -7,6 +7,7 @@
 #include "robot/odometry.hpp"
 
 #include <cstddef>
+#include <functional>
 
 namespace robot {
 
@@ -57,6 +58,22 @@ struct CordonRequest {
     // Arrive at final_heading backwards. The robot still finishes facing
     // final_heading it just gets there with its back to the approach.
     bool reverse = false;
+
+    // --- subsystem actions (run by AutonContext::run in autons.hpp) --------
+    // Designated initializers must stay in this order, so these go after
+    // .reverse in a path point. Leave any of them out to skip it.
+
+    // Runs as the robot sets off for this point. Keep it quick (a toggle,
+    // starting the intake): the drive does not start until it returns.
+    std::function<void()> on_start{};
+
+    // Runs once the point is reached, robot still where it stopped. Can take
+    // a while (lift move_to); the path waits for it.
+    std::function<void()> at_end{};
+
+    // Seconds to sit still after at_end before the next point. Stops the
+    // drive even when stop_at_end is false. A stick still cuts it short.
+    double pause_after = 0.0;
 };
 
 // Filtering applied to a motion's distance PID. Held on the Drivetrain so it
@@ -124,13 +141,25 @@ private:
     Odometry&   odometry_;
     Interrupts& interrupts_;
 
-    // Defaults preserve what these motions did when the values were hard-coded
-    // in drive.cpp: drive_distance smooths and slews, cordon does neither.
+    // drive_distance smooths and slews. cordon slews 5 % per tick (0 to full in
+    // 0.4 s) so the drive ramps back up after a pivot or a stop instead of
+    // jumping straight to full power.
     DriveTuning drive_tuning_ {6, 3.0};
-    DriveTuning cordon_tuning_{1, 0.0};
+    DriveTuning cordon_tuning_{1, 5.0};
+
+    // Drive power a pass-through cordon point ended on, still applied to the
+    // wheels, so the next point's slew starts from it instead of from 0.
+    // Cleared by stop().
+    double carry_drive_   = 0.0;
+    bool   carry_reverse_ = false;
 
     double last_turn_error_ = 0.0;
     double last_turn_power_ = 0.0;
 };
+
+// TEMPORARY: writes the per-tick trace of every cordon() since the last call
+// (stdout and /usd/cordon.csv, if CORDON_TRACE is on), then clears it. Call it
+// with the robot stopped, since the printing takes a while.
+void dump_cordon_trace();
 
 }

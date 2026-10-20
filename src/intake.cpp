@@ -5,6 +5,7 @@ namespace robot {
 Intake::Intake(Hardware& hw) : hw_(hw) {}
     void Intake::run(double speed) {
         hw_.top_roller.move_velocity(speed);
+        hw_.bottom_roller.move_velocity(speed);
     }
     void Intake::run_top(double speed) {
         hw_.top_roller.move_velocity(speed);

@@ -29,6 +29,15 @@ constexpr double MIN_HEADING_SCALE = 0.0;
 // badly misaligned carries the robot off along its old heading, and the turn
 // PID cannot pull it back before the target.
 constexpr double PIVOT_FIRST_DEG = 30.0;
+// Once pivoting, keep pivoting until back inside this. One threshold for both
+// made the drive flick on and off every tick while the error sat near 30.
+constexpr double PIVOT_DONE_DEG = 15.0;
+
+// TEMPORARY cordon trace. Every point stashes its samples, and the whole path is
+// written out once by dump_cordon_trace() after the robot has stopped. Dumping
+// at the end of each point used to leave a pass-through point coasting on its
+// last command while it printed. Set false for matches.
+constexpr bool CORDON_TRACE = true;
 
 // The odometry task publishes on its own cadence, which is its 20 ms delay plus
 // three smart-port device reads. The control loop samples at a flat 20 ms, so
@@ -40,7 +49,9 @@ constexpr std::size_t CORDON_HEADING_SMOOTHING = 3;
 // this did not come from the robot moving.
 constexpr double IMPOSSIBLE_DEG_PER_S = 400.0;
 
-constexpr double MAX_LEAD = 0.15;
+// Highest lead cordon accepts. Above about 0.6 the carrot sits so far back
+// that the robot swings wide; at 1.0 it would be behind the robot.
+constexpr double MAX_LEAD = 0.6;
 
 constexpr double CARROT_EPSILON_IN = 1.5;
 
@@ -48,14 +59,25 @@ constexpr int MAX_SENSOR_FAULTS     = 50;
 constexpr int SENSOR_RETRY_DELAY_MS = 10;
 
 // TEMPORARY trace storage. Samples are stashed here during the motion and
-// printed once it ends: a blocking printf inside a 20 ms control loop stretches
-// the tick and changes the behaviour being measured.
+// printed once the path ends: a blocking printf inside a 20 ms control loop
+// stretches the tick and changes the behaviour being measured.
 struct TraceSample {
     std::uint16_t ms;
     float dist, aim, head, terr, drive, turn, left, right;
 };
-constexpr int TRACE_MAX = 220;
-TraceSample trace_buf[TRACE_MAX];
+// One cordon() call's worth of samples, trace_buf[first .. first + count).
+struct TraceSegment {
+    float         x, y, heading, lead, exit_radius;
+    MotionResult  result;
+    int           first, count, ticks;
+    std::uint32_t ms;
+};
+constexpr int TRACE_MAX   = 1500;  // one sample per tick across a whole path: 30 s
+constexpr int SEGMENT_MAX = 32;    // points per path
+TraceSample  trace_buf[TRACE_MAX];
+int          trace_n = 0;
+TraceSegment trace_seg[SEGMENT_MAX];
+int          seg_n = 0;
 
 bool elapsed(std::uint32_t start_ms, double timeout_s) {
     return (pros::millis() - start_ms) > static_cast<std::uint32_t>(timeout_s * 1000.0);
@@ -78,6 +100,7 @@ void Drivetrain::set_wheel_percent(double left_percent, double right_percent) {
 void Drivetrain::stop() {
     hw_.left.move_velocity(0);
     hw_.right.move_velocity(0);
+    carry_drive_ = 0.0;
 }
 
 void Drivetrain::reverse() {
@@ -212,6 +235,10 @@ MotionResult Drivetrain::cordon(const CordonRequest& request) {
     distance.set_derivative_smoothing(cordon_tuning_.derivative_samples);
     distance.set_slew(cordon_tuning_.slew);
     distance.set_output_limits(-100.0, 100.0);
+    // Coming straight off a pass-through point the wheels are still turning at
+    // its last drive power. Start the slew there: from 0 it would brake the
+    // robot at every waypoint and then ramp back up.
+    if (carry_drive_ > 0.0 && carry_reverse_ == request.reverse) distance.prime(carry_drive_);
     Pid heading(request.turn_gains, CORDON_TURN_INTEGRAL);
     heading.set_derivative_smoothing(CORDON_HEADING_SMOOTHING);
 
@@ -225,6 +252,9 @@ MotionResult Drivetrain::cordon(const CordonRequest& request) {
 
     int          sensor_faults = 0;
     MotionResult result        = MotionResult::Timeout;
+    bool         pivoting      = false;
+    double       prev_heading  = 0.0;
+    bool         have_heading  = false;
 
     // TEMPORARY oscillation telemetry.
     int    osc_ticks    = 0;
@@ -247,7 +277,7 @@ MotionResult Drivetrain::cordon(const CordonRequest& request) {
     double        osc_sumdelta = 0.0;
     double        osc_sumdt    = 0.0;
 
-    int trace_n = 0;
+    const int trace_first = trace_n;
 
     while (true) {
         if (interrupts_.poll())                         { result = MotionResult::Interrupted; break; }
@@ -283,8 +313,16 @@ MotionResult Drivetrain::cordon(const CordonRequest& request) {
         // Reversing points the body the other way; the wheels do the rest
         if (request.reverse) desired_heading = normalise_angle(desired_heading + 180.0);
 
-        const double turn_error = normalise_angle(desired_heading - pose.heading);
-        const double turn_power = heading.update(turn_error);
+        // D acts on how fast the robot is actually turning, not on the error.
+        // The target heading moves with the carrot and can step (the carrot
+        // dropping inside CARROT_EPSILON_IN, a fresh pivot), and differentiating
+        // the error turned every step into a kd-sized spike in turn power.
+        const double turn_error     = normalise_angle(desired_heading - pose.heading);
+        const double heading_change = have_heading ? normalise_angle(pose.heading - prev_heading)
+                                                   : 0.0;
+        prev_heading = pose.heading;
+        have_heading = true;
+        const double turn_power = heading.update_with_change(turn_error, -heading_change);
 
         // TEMPORARY oscillation telemetry.
         osc_ticks++;
@@ -325,7 +363,9 @@ MotionResult Drivetrain::cordon(const CordonRequest& request) {
         osc_haveh  = true;
 
         double drive_power = 0.0;
-        if (std::fabs(turn_error) > PIVOT_FIRST_DEG) {
+        if (std::fabs(turn_error) > PIVOT_FIRST_DEG) pivoting = true;
+        if (std::fabs(turn_error) < PIVOT_DONE_DEG) pivoting = false;
+        if (pivoting) {
             // Reset so the slew ramps drive up from zero once aligned instead
             // of jumping straight to whatever it would have built up meanwhile
             distance.reset();
@@ -345,7 +385,8 @@ MotionResult Drivetrain::cordon(const CordonRequest& request) {
         }
 
         // TEMPORARY per-tick trace. Stash only, no I/O in the loop.
-        if (trace_n < TRACE_MAX && (osc_ticks % 5) == 0) {
+        // Every tick, so a one-tick lunge or kick can't fall between samples.
+        if (trace_n < TRACE_MAX) {
             trace_buf[trace_n++] = TraceSample{
                 static_cast<std::uint16_t>(pros::millis() - start_time),
                 static_cast<float>(distance_left),   static_cast<float>(desired_heading),
@@ -358,38 +399,29 @@ MotionResult Drivetrain::cordon(const CordonRequest& request) {
         pros::delay(LOOP_INTERVAL_MS);
     }
 
-    // TEMPORARY oscillation telemetry.
-    // TEMPORARY trace dump. Written to the terminal and, if a microSD card is
-    // fitted, appended to /usd/cordon.csv so the data survives without one.
-    const std::uint32_t trace_ms = pros::millis() - start_time;
-    std::FILE*          sd       = std::fopen("/usd/cordon.csv", "a");
-    std::FILE*          sinks[2] = {stdout, sd};
-
-    for (std::FILE* out : sinks) {
-        if (out == nullptr) continue;
-        std::fprintf(out, "\n# cordon -> %.1f,%.1f head %.1f lead %.2f exit %.1f : %s\n",
-                     request.x, request.y, request.final_heading, lead,
-                     request.exit_radius, to_string(result));
-        std::fprintf(out, "# ticks %d over %lu ms, %.1f ms/tick\n", osc_ticks,
-                     static_cast<unsigned long>(trace_ms),
-                     osc_ticks > 0 ? static_cast<double>(trace_ms) / osc_ticks : 0.0);
-        std::fprintf(out, "# t_ms,dist,aim,head,turn_err,drive,turn,left,right\n");
-        for (int i = 0; i < trace_n; i++) {
-            const TraceSample& s = trace_buf[i];
-            std::fprintf(out, "%u,%.2f,%.1f,%.1f,%.1f,%.1f,%.1f,%.0f,%.0f\n",
-                         static_cast<unsigned>(s.ms), static_cast<double>(s.dist),
-                         static_cast<double>(s.aim), static_cast<double>(s.head),
-                         static_cast<double>(s.terr), static_cast<double>(s.drive),
-                         static_cast<double>(s.turn), static_cast<double>(s.left),
-                         static_cast<double>(s.right));
-        }
-        std::fflush(out);
+    const bool aborted = (result == MotionResult::Interrupted)
+                      || (result == MotionResult::SensorFault);
+    if (request.stop_at_end || aborted) {
+        stop();
+    } else if (!request.turn_at_end) {
+        // Still rolling on the last command; the next point picks up from here.
+        carry_drive_   = std::max(0.0, distance.output());
+        carry_reverse_ = request.reverse;
     }
 
-    if (sd != nullptr) std::fclose(sd);
-    pros::lcd::print(1, "held %d/%d rf %d %.1fms sd:%s", osc_held, osc_ticks, osc_readfail,
-                     osc_ticks > 0 ? static_cast<double>(trace_ms) / osc_ticks : 0.0,
-                     sd != nullptr ? "ok" : "none");
+    // TEMPORARY oscillation telemetry. Only cheap bookkeeping here; the trace
+    // itself is written by dump_cordon_trace() once the path is over.
+    const std::uint32_t trace_ms = pros::millis() - start_time;
+    if (seg_n < SEGMENT_MAX) {
+        trace_seg[seg_n++] = TraceSegment{
+            static_cast<float>(request.x),    static_cast<float>(request.y),
+            static_cast<float>(request.final_heading), static_cast<float>(lead),
+            static_cast<float>(request.exit_radius),   result,
+            trace_first, trace_n - trace_first, osc_ticks, trace_ms};
+    }
+
+    pros::lcd::print(1, "held %d/%d rf %d %.1fms", osc_held, osc_ticks, osc_readfail,
+                     osc_ticks > 0 ? static_cast<double>(trace_ms) / osc_ticks : 0.0);
 
     pros::lcd::print(0, "hd swing %.0f rate %.0f/s",
                      osc_hmax - osc_hmin, osc_maxrate);
@@ -399,10 +431,6 @@ MotionResult Drivetrain::cordon(const CordonRequest& request) {
                      osc_sumdt > 0.0 ? osc_sumdelta / osc_sumdt : 0.0);
     pros::lcd::print(5, "period %.0f ms",
                      osc_flips > 1 ? (2.0 * osc_ticks * LOOP_INTERVAL_MS) / osc_flips : 0.0);
-
-    const bool aborted = (result == MotionResult::Interrupted)
-                      || (result == MotionResult::SensorFault);
-    if (request.stop_at_end || aborted) stop();
 
     if (aborted) return result;
 
@@ -417,6 +445,48 @@ MotionResult Drivetrain::cordon(const CordonRequest& request) {
         return turn_to(request.final_heading, request.final_turn_gains, request.turn_timeout);
     }
     return result;
+}
+
+void dump_cordon_trace() {
+    // TEMPORARY trace dump. Written to the terminal and, if a microSD card is
+    // fitted, appended to /usd/cordon.csv so the data survives without one.
+    if (CORDON_TRACE && seg_n > 0) {
+        std::FILE* sd       = std::fopen("/usd/cordon.csv", "a");
+        std::FILE* sinks[2] = {stdout, sd};
+
+        for (std::FILE* out : sinks) {
+            if (out == nullptr) continue;
+            for (int p = 0; p < seg_n; p++) {
+                const TraceSegment& g = trace_seg[p];
+                std::fprintf(out, "\n# cordon -> %.1f,%.1f head %.1f lead %.2f exit %.1f : %s\n",
+                             static_cast<double>(g.x), static_cast<double>(g.y),
+                             static_cast<double>(g.heading), static_cast<double>(g.lead),
+                             static_cast<double>(g.exit_radius), to_string(g.result));
+                std::fprintf(out, "# ticks %d over %lu ms, %.1f ms/tick\n", g.ticks,
+                             static_cast<unsigned long>(g.ms),
+                             g.ticks > 0 ? static_cast<double>(g.ms) / g.ticks : 0.0);
+                std::fprintf(out, "# t_ms,dist,aim,head,turn_err,drive,turn,left,right\n");
+                for (int i = g.first; i < g.first + g.count; i++) {
+                    const TraceSample& s = trace_buf[i];
+                    std::fprintf(out, "%u,%.2f,%.1f,%.1f,%.1f,%.1f,%.1f,%.0f,%.0f\n",
+                                 static_cast<unsigned>(s.ms), static_cast<double>(s.dist),
+                                 static_cast<double>(s.aim), static_cast<double>(s.head),
+                                 static_cast<double>(s.terr), static_cast<double>(s.drive),
+                                 static_cast<double>(s.turn), static_cast<double>(s.left),
+                                 static_cast<double>(s.right));
+                }
+            }
+            if (trace_n >= TRACE_MAX || seg_n >= SEGMENT_MAX) {
+                std::fprintf(out, "# trace buffer full, later samples dropped\n");
+            }
+            std::fflush(out);
+        }
+
+        if (sd != nullptr) std::fclose(sd);
+    }
+
+    trace_n = 0;
+    seg_n   = 0;
 }
 
 }

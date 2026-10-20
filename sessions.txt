@@ -1,0 +1,1431 @@
+==============================================================================
+ENGINEERING LOG  -  VEX V5RC 2026-2027 (Override)  -  PROS project
+Folder: "Test - 2026 - 2027"
+==============================================================================
+
+Entries are in date order, oldest first. One entry = one working session.
+The date in each heading is when the work was done. Entries marked "written
+up later" were reconstructed afterwards from the chat history and the code.
+
+Status tags (right-hand side of a heading, or at the end of a bullet):
+  TESTED           run on the robot in that session, result recorded
+  BUILDS           compiled and linked clean (pros make), not run on the robot
+  SYNTAX           passed arm-none-eabi-g++ -fsyntax-only only, no link, not run
+  NOT TESTED       written but never executed (NOT RUN means the same)
+  NOT RESOLVED     problem recorded, no fix confirmed
+  NOT IMPLEMENTED  discussed and decided only, no code written
+Values quoted are what was set AT THE TIME. Where a later session changed
+them, a "CHANGED SINCE" line says so and points at that session.
+
+Building from a terminal (pros is not on PATH, so plain "pros make" fails):
+  %APPDATA%\Code\User\globalStorage\sigbots.pros\install\pros-cli-windows\pros.exe make
+
+Commits (git log, oldest first):
+  57915f9  2026-07-06  Initial commit: VEX V5 PROS project (2026-2027 season)
+  b014503  2026-07-06  Allow git credential check in local Claude settings
+  3d29ed8  2026-07-06  Untrack local Claude settings
+  1f50c3a  2026-07-08  Apply code review fixes to odometry and drive control
+  b447eb5  2026-09-02  Split monolithic main.cpp into robot subsystem modules
+  dc9dacd  2026-09-05  local drive and odometry tweaks
+  c21625f  2026-09-05  Fix odometry task starvation, PID reset bug, and add
+                       drive telemetry
+  f7b3403  2026-09-20  Tuned constants for drive, turn, cordon turn, and lead
+  62fa307  2026-10-05  added subsytems
+Everything from the 2026-10-08 session onwards is uncommitted as of
+2026-10-11.
+
+
+==============================================================================
+SESSION 2026-09-05  (first session, written up later)
+==============================================================================
+
+Nothing was compiled from the chat (no PROS tools on PATH; the pros.exe path
+in the header of this file was found later); every build was done from
+VS Code. Committed by the user as c21625f "Fix odometry task starvation, PID
+reset bug, and add drive telemetry".
+
+------------------------------------------------------------------------------
+1. BRAIN SCREEN NEVER CAME UP (src/odometry.cpp)                     TESTED
+------------------------------------------------------------------------------
+- pros::lcd::initialize() was fine. The odometry task was starving the
+  display: its three "ignore big jump" guards did a continue with NO
+  pros::delay(), so once one tripped the task spun at 100% and LVGL never
+  got to draw.
+- Three things guaranteed it tripped straight away:
+  * Units: threshold was tolerance * inches_per_tick (= 0.00044) compared
+    against a delta in CENTIDEGREES. Any movement at all exceeded it.
+  * prev_raw_h was compared BEFORE it was ever seeded. While the IMU was
+    still calibrating get_heading() returns infinity, so |inf - 0| > 2.5
+    was true forever. Locked before "ROBOT READY" could print.
+  * A rejected sample never advanced prev_, so one bad read made every
+    later read look like the same huge jump.
+- Fix: one pros::delay(LOOP_INTERVAL_MS) at the top of the loop so every
+  path yields; sensors read once per tick; first good sample only seeds;
+  deltas compared in inches against tolerance and in degrees against
+  tolerance_heading (which existed in config.hpp but was never used);
+  heading delta goes through normalise_angle so 359 -> 1 is not a 358 jump;
+  a rejected sample still advances prev_.
+- Result: screen came up. User removed the "ROBOT READY" print.
+
+------------------------------------------------------------------------------
+2. POSE NOT PRINTING ON LINE 2 (src/odometry.cpp)                    TESTED
+------------------------------------------------------------------------------
+- pros::Rotation::get_position() reports failure as PROS_ERR = INT32_MAX,
+  which is a perfectly FINITE number as a double. std::isfinite() missed
+  it, the delta came out ~375,000 inches, the tolerance check rejected it,
+  and the continue ran before the display counter was ever incremented.
+- Fix: read_ticks() helper checks == PROS_ERR by value before the cast
+  (still used by every rotation sensor read, including the lift).
+  display_due is decided at the top of the tick before any early exit, so
+  a tick that cannot produce a pose still says why: "ODOM no data: X Y".
+  Rejected-but-alive samples print the pose with a trailing "!".
+
+------------------------------------------------------------------------------
+3. RUN WITHOUT THE IMU (src/odometry.cpp)                            TESTED
+------------------------------------------------------------------------------
+- IMU was unplugged; user only wanted forward/back tuning.
+- IMU made optional: only the two trackers block integration. With
+  get_heading() non-finite the heading holds whatever set_pose() seeded
+  (START_HEADING = 0) and line 2 shows " noIMU".
+- Works because drive_distance() takes heading from the odometry pose, not
+  the IMU, and HEADING_HOLD_GAINS were all zero. turn_to() fails cleanly
+  with "sensor fault"; cordon steers wrong without a heading; any real
+  rotation during a test is integrated as translation.
+- CHANGED SINCE: superseded on 2026-10-08 by the two-IMU fusion (SESSION
+  2026-10-08 section 1), which kept the noIMU tag.
+
+------------------------------------------------------------------------------
+4. DRIVES VERY SLOWLY, kp DOES NOTHING (src/pid.cpp)                 TESTED
+------------------------------------------------------------------------------
+- Pid::update() called set_derivative_smoothing(4) on EVERY tick (added in
+  dc9dacd), and that calls reset(), which zeroes output_. With
+  drive_distance's slew of 3.0 the output was then
+      output_ = 0 + clamp(target, -3, 3)
+  every tick: hard-capped at 3% of DRIVE_MAX_RPM = 6 RPM no matter what
+  kp was. Also: D term was error/0.02 (prev_error_ wiped), I never
+  accumulated, and the configured derivative_samples = 6 was overridden
+  to 4.
+- Fix: deleted that one line. Smoothing is set once by drive_distance()
+  before the loop, which is the right place.
+- Result: drove fast. Then it did not stop (see 5). Old gains were tuned
+  against the broken controller, so retune from scratch.
+
+------------------------------------------------------------------------------
+5. DRIVE NEVER STOPS (src/drive.cpp, src/pid.cpp)              NOT RESOLVED
+------------------------------------------------------------------------------
+- Symptom: "it went to 60 and just did not stop".
+  MACRO_DISTANCE_IN (12) * kp (5) = 60, so the most likely reading is that
+  pwr on line 5 ramped to 60 and SAT there = err frozen at 12 = the loop
+  never saw the tracker move even though the robot did. Not confirmed.
+- The user had raised DRIVE_TIMEOUT from 3 s to 60 s while tuning, which is
+  why nothing ended the drive. (autons.hpp now has it at 8.0.)
+- Ruled out by the user: tracker reversed (set_reversed tried both ways),
+  Y plugged into the sideways wheel / X-Y ports swapped, wheel off the
+  floor, wrong port.
+- Added, then REMOVED at user's request (not in the commit):
+  * Runaway check -> "tracker backwards" (travelled going the wrong way
+    past 3").
+  * TrackerStuck check -> "tracker not moving" (power > 20 for 0.75 s with
+    < 0.5" of travel).
+- Kept:
+  * Line 5 telemetry every 100 ms while driving:
+        DRV trv <travelled> err <error> pwr <pid output>
+  * autonomous() shows its drive_distance result on line 7 like the macro.
+  * Slew is now accelerate-only. Before, it limited DEceleration too, so
+    the PID could only shed 3%/tick (~0.67 s from 100% to 0) and sailed
+    past the target. Backing off is instant now.           NOT TESTED
+- Readings asked for but not received: trv/err/pwr on line 5 during the
+  drive, the line 7 result word, and whether Y on line 2 changes when the
+  robot is pushed by hand.
+- Possibly the same fault: on 2026-10-11 the tracking wheels were found to
+  be FLIPPED during offset tuning (SESSION 2026-10-11 section 4). Worth
+  re-running drive_distance now.
+
+------------------------------------------------------------------------------
+6. OTHER
+------------------------------------------------------------------------------
+- DRIVE_GAINS kd 0.5 -> 1.0, set by the user.
+- MotorGroups are built with no gearset (hardware.cpp), so
+  DRIVE_MAX_RPM = 200 assumes green cartridges. If the drive is blue (600),
+  move_velocity(200) tops out at a third of the motor. Not checked.
+  Still unchecked at 2026-10-11: no gearset in hardware.cpp, DRIVE_MAX_RPM
+  still 200.
+- git: how to commit from the terminal tab (git add -A / git commit -m /
+  git push); user did the commit themselves.
+
+------------------------------------------------------------------------------
+TO DO (as of this session, mostly carried into the later ones)
+------------------------------------------------------------------------------
+- Get the line 5 / line 7 / line 2 readings for a drive_distance run and
+  find out why it did not settle.
+- Retune DRIVE_GAINS from something small (~kp 2, kd 0) now the PID works.
+- Confirm drive cartridge colour vs DRIVE_MAX_RPM.
+- Keep DRIVE_TIMEOUT short (3-5 s); it is the last line of defence.
+
+
+==============================================================================
+SESSION 2026-09-17 / 2026-09-18  (odometry + cordon tuning, written up later)
+==============================================================================
+
+Nothing was built in the assistant's shell; every upload was done from
+VS Code. Syntax was checked with arm-none-eabi-g++ -fsyntax-only before each
+handover. Several values set here were superseded later; see the CHANGED
+SINCE notes.
+
+------------------------------------------------------------------------------
+1. PID UNITS WERE WRONG (src/pid.cpp, include/robot/pid.hpp)
+------------------------------------------------------------------------------
+- Pid::update divided the error change by dt in SECONDS, so with a 20 ms tick
+  the derivative came out 50x larger than any tuning guide assumes. Every kd
+  in the project was effectively 50x too strong, which is why "increase kd
+  when it oscillates" made things worse every single time.
+- Changed to per-tick units: the derivative is now the error change over one
+  LOOP_INTERVAL_S tick, and the integral adds one error sample per tick. A
+  `ticks` factor corrects a loop that ran long.                       TESTED
+- All call sites used the default dt, so nothing else needed changing.
+- Consequence: every kd in main.cpp had to be re-tuned from scratch.
+
+------------------------------------------------------------------------------
+2. Y TRACKER REVERSED (src/hardware.cpp)
+------------------------------------------------------------------------------
+- yrot.set_reversed(true) -> false.                                   TESTED
+
+------------------------------------------------------------------------------
+3. DRIVER-CONTROL REVERSE BUTTON - TRIED AND REVERTED
+------------------------------------------------------------------------------
+- Drivetrain::reverse() called left.set_reversed() with no argument, which
+  does not compile, and flipped only one motor per side.
+- Replaced with a software `reversed_` flag that negates the arcade/tank
+  input, because flipping motors at the device level also breaks odometry and
+  every autonomous motion. Then REVERTED at the user's request; the original
+  (non-compiling) version is what stayed.                         NOT TESTED
+
+------------------------------------------------------------------------------
+4. TRACKING WHEEL OFFSETS - THE MAIN RESULT
+------------------------------------------------------------------------------
+- Symptom: the pose drifted several inches during any turn, cordon circled
+  its target, and nothing downstream could be tuned on top of it.
+- FIRST APPROACH (fitting the offsets from pose drift after 90/180/270/360
+  turns) WASTED HOURS AND GAVE CONTRADICTORY ANSWERS. Two lessons:
+  * A constant offset error CANCELS EXACTLY over a full revolution. A 360
+    that comes back to zero proves nothing. Only partial angles inform.
+  * Successive fits implied physically impossible offsets (9 in, then 19 in)
+    because the pose integration was itself being corrupted.
+- WHAT ACTUALLY WORKED: a temporary auton that reads the rotation sensors
+  DIRECTLY (xrot/yrot get_position before and after), pivots under power, and
+  accumulates the true rotation from the IMU:
+      x_off =  (dx * inches_per_tick) / total_rad
+      y_off = -(dy * inches_per_tick) / total_rad
+  Immune to the odometry task, its tolerances, and the current offsets.
+- Five runs at two pivot speeds, 30.9 revolutions in total:          TESTED
+      v50  1543.9 deg   x -4.417   y 0.622
+      v50  1550.7 deg   x -4.338   y 0.632
+      v50  1546.3 deg   x -4.357   y 0.638
+      v35  3239.9 deg   x -4.349   y 0.630
+      v35  3236.2 deg   x -4.335   y 0.636
+      pooled            x -4.354   y 0.632
+  Speed made no difference, which ruled out speed-dependent skid.
+- Set x_tracker_offset = -4.37, y_tracker_offset = 0.63.
+- VERIFIED with a second temporary auton that seeds the pose to 0 and samples
+  it at 90 / 180 / 270 / 360 of a slow powered pivot. Three runs, every
+  quarter turn within 0.2 in on both axes.                           TESTED
+  An earlier 5-inch failure of this test turned out to be a stale build, so
+  the verifier was changed to print the offsets actually in use.
+- Residual drift after calibration: about 0.1 in per full rotation. That is
+  real skid and quantisation, not an offset error, and has no knob.
+- Both temporary autons were removed afterwards and main.cpp was restored
+  byte-identical from a backup.
+- CHANGED SINCE: the offsets are now -0.02 / 0.28, because the tracking
+  wheels were later found to be FLIPPED (SESSION 2026-10-11, section 4). The
+  measurement method above is still the one that works and is now a
+  permanent auton ("tune offsets").
+
+------------------------------------------------------------------------------
+5. tolerance_heading WAS THROWING AWAY REAL MOTION (config.hpp)
+------------------------------------------------------------------------------
+- Was 5 degrees per 20 ms tick, which is 250 deg/s. A powered pivot exceeds
+  that, and when the check fires the odometry task discards the WHOLE update
+  for that tick, position included. Hand tests never hit it, powered autons
+  always did.
+- Raised to 30.                                                      TESTED
+- This is the most likely reason the early pose-drift fits disagreed.
+
+------------------------------------------------------------------------------
+6. CORDON COULD ONLY EVER DRIVE FORWARDS (src/drive.cpp)
+------------------------------------------------------------------------------
+- drive_power came from hypot(), always positive, and was scaled by
+  max(MIN_HEADING_SCALE, cos(turn_error)). With the floor at 0.15 the robot
+  still crept forward at 15 percent while facing 180 degrees away from the
+  target. Forward motion plus a hard turn is a circle, so it orbited and
+  never reached the exit radius.
+- The floor was set to 0.0 first (the robot then pivots instead of circling),
+  then the clamp was REMOVED entirely so the cosine can go negative and the
+  robot simply reverses into the point.                              TESTED
+- Effect, same test either side of the change:
+      with clamp:  flips 15  maxerr 120  mindst 2.1  period 1069  TIMEOUT
+      without:     flips 10  maxerr 102  mindst 2.5  period 1096  SETTLED
+- MIN_HEADING_SCALE is now unused.
+- CHANGED SINCE: removing the clamp turned out to be a real bug. Past 90 deg
+  of error the negative cosine made the robot drive AWAY from the point,
+  self-reinforcing. The clamp was put back the next day as
+  max(0.0, cos(...)), so the robot pivots instead (SESSION 2026-09-18/19,
+  section 2).
+
+------------------------------------------------------------------------------
+7. CORDON OSCILLATION TELEMETRY (src/drive.cpp, temporary)
+------------------------------------------------------------------------------
+- Added inside cordon and printed on brain lines 3-6 after the motion ends:
+  ticks, sign flips of turn_error, max |turn_error|, min distance_left,
+  oscillation period, and "aim swing" (the range of desired_heading).
+- "aim swing" settled a long argument. It separates the robot swinging around
+  a steady target (a gain problem) from the robot faithfully following a
+  target that is itself swinging (a geometry problem). Period does the same
+  job: under ~100 ms is the derivative chasing noise, ~1 s is a body-sized
+  loop, and the two have opposite fixes.
+- Worth re-adding whenever cordon misbehaves. Guessing from the outside cost
+  far more uploads than the telemetry did.
+
+------------------------------------------------------------------------------
+8. BOOMERANG LEAD - WHAT WAS LEARNED
+------------------------------------------------------------------------------
+- Lead 0 drove cleanly. Everything above 0 oscillated near the target.
+- Cause: the carrot sits between the robot and the target, roughly
+  distance x (1 - lead) away, so a bigger lead puts the aim point CLOSER to
+  the robot and the bearing to it swings harder. CARROT_EPSILON_IN is the
+  guard for this and was 0.1, far too small; raised to 4.0 then.      TESTED
+- Measurements, same target, final_heading 20:
+      lead 0.65   aim swing  71   maxerr 102   ended H   7  (timeout)
+      lead 0.4    aim swing  49   maxerr  46   ended H  44
+      lead 0.5 A  aim swing  76   maxerr  95   ended H -21  (settled)
+      lead 0.5 B  aim swing 186   maxerr 180   ended H  49  (settled)
+- THE KEY FINDING: position repeated to within an inch across runs, the final
+  heading did NOT. Two identical runs finished 70 degrees apart. cordon never
+  closes a loop on heading, it aims at a point, so the heading you end on is
+  whatever phase of the swing you were in when you crossed the exit radius.
+  No gain or lead value fixes that.
+- Dead ends, both made it worse:
+  * steering kp 3 -> 1.5: under-steers, cannot follow the curve, circles.
+  * halving cordon's drive gains: with less forward power the same steering
+    command turns the robot much harder, so it over-rotates. What matters is
+    the RATIO of turn_power to drive_power, and 3 : 6 was already about right.
+- CHANGED SINCE: CARROT_EPSILON_IN is now 1.5, and 2026-10-11 added a proper
+  near-end fix (BOOMERANG_CLOSE_IN) that steers for final_heading inside
+  7.5 in (SESSION 2026-10-11, section 8). Same idea, better implemented.
+
+------------------------------------------------------------------------------
+9. FINAL HEADING - USE THE PIVOT, NOT THE BOOMERANG
+------------------------------------------------------------------------------
+- Conclusion of section 8: the boomerang gets the position, a final pivot
+  gets the heading. turn_to is the only thing that closes a loop on heading,
+  and it will not exit until the error is under TURN_SETTLE_DEG (0.5) for
+  100 ms.
+- Set .turn_at_end = true and .final_turn_gains = TURN_GAINS in the request.
+  Designated initialisers must be in declaration order or it will not build:
+  final_turn_gains goes after turn_gains, turn_at_end after stop_at_end.
+- Leaving final_turn_gains unset while turn_at_end is true gives an all-zero
+  controller: the pivot commands zero power and burns the whole turn_timeout.
+- THE FIRST ATTEMPT OVERSHOT BADLY. Cause: cordon called stop() and turn_to()
+  back to back, so the pivot started while the robot was still rolling, and a
+  fresh Pid has zero derivative on its first tick, blind to the rotation
+  already in progress. Added an explicit stop() plus a 200 ms settle before
+  the pivot.                                                    NOT RETESTED
+- If the pivot reports timeout it is stalling short: TURN_GAINS kp 0.6 gives
+  about 0.3 percent motor power at 0.5 deg of error, not enough to break
+  static friction. Raise kp to ~2, or add ki ~0.02 (the integral zone is
+  already configured, ki is 0).
+
+------------------------------------------------------------------------------
+10. TUNING ORDER THAT CAME OUT OF ALL THIS
+------------------------------------------------------------------------------
+      1. tracker offsets      full turn drifts under 0.5 in
+      2. straight drive       24 in, ends where you aimed
+      3. pivot turns          lands on heading, no hunting
+      4. cordon steering      lead 0, merges on line, no weaving
+      5. exit radius          parks cleanly, never orbits
+      6. boomerang lead       arrives on final heading
+- Each stage sits on the one above it. Almost every problem in this session
+  traced back to stage 1.
+- ONE NUMBER PER UPLOAD. Every time this went sideways it was because two
+  things changed between runs and there was no way to tell which did it.
+- Symptom -> knob:
+      weaves down the path          lower steering kp
+      lazy arc, never lines up      raise steering kp
+      pivots instead of driving     steering kp far too high
+      circles the target            raise exit radius
+      hunts only when lead is on    raise carrot epsilon
+      shuttles back and forth       let drive power go negative
+      arrives facing wrong way      raise lead, or use turn_at_end
+
+
+==============================================================================
+SESSION 2026-09-18 / 2026-09-19  (boomerang, waypoint paths, oscillation hunt;
+                                  written up 2026-10-11)
+==============================================================================
+
+Nothing this session was built with a real make, only SYNTAX checks (the
+pros.exe path in the header of this file was not known yet).
+
+------------------------------------------------------------------------------
+1. WAYPOINT PATHS (src/main.cpp)                                 TESTED
+------------------------------------------------------------------------------
+- Added run_path(drivetrain, points[]) in the anonymous namespace: runs a
+  CordonRequest array in order and STOPS at the first leg that does not
+  return Settled (a timed-out leg leaves the robot where the rest were
+  never planned from).
+- autonomous() now builds "const CordonRequest path[] = {...}" and calls
+  run_path(). Blocks are written inline, not built by a helper function.
+- WAYPOINT_RADIUS was declared but never used; set to 6.0 and wired to
+  pass-through points. FINAL_RADIUS stays tight for the last point.
+- Handoff speed is roughly (drive kp x exit_radius). At kp 4 that is 8% at
+  a 2 in radius and 24% at 6 in - that is why a pass-through point wants a
+  generous radius. Measured: exit 4 -> 6 and kp 6 -> 10 took handoff speed
+  from 5.7 to 14.8 in/s and cut 0.7 s off a 3-point path.
+- drive_gains is per-request, so pass-through points can run a hotter kp
+  than the final point without touching DRIVE_GAINS.
+- CHANGED SINCE: run_path() became ctx.run() when the auton selector was
+  built (SESSION 2026-10-08, section 3).
+
+------------------------------------------------------------------------------
+2. THE COS CLAMP WAS MISSING (src/drive.cpp)       REAL BUG - FIXED, TESTED
+------------------------------------------------------------------------------
+- cordon() had degraded to:   drive_power *= std::cos(turn_error * deg2rad);
+  The std::max(MIN_HEADING_SCALE, ...) wrapper was gone (removed the day
+  before, SESSION 2026-09-17/18 section 6), so past 90 deg of turn_error cos
+  goes NEGATIVE and the robot drove AWAY from the target.
+- Self-reinforcing: reversing grows distance_left, which grows the PID
+  output, which grows the reverse power.
+- Seen on the robot: maxerr 136, ended 9.4 in from a point it had already
+  been within 3.7 in of, full 8 s timeout.
+- Restored to:
+    drive_power *= std::max(MIN_HEADING_SCALE, std::cos(turn_error*deg2rad));
+- MIN_HEADING_SCALE is 0.0, so past 90 deg the robot now pivots in place
+  instead of fleeing.
+
+------------------------------------------------------------------------------
+3. HEADING FROZE AND SNAPPED (src/odometry.cpp)                  TESTED
+------------------------------------------------------------------------------
+- heading_ = curr_h was only assigned INSIDE
+  "if (!implausible && lock_.take(50))". Any skipped iteration (failed
+  tracker read, rejected interval, missed lock) left the heading frozen
+  while the robot kept turning, then the next good tick snapped it forward
+  by the whole accumulated angle. A PID differentiating that sees a step,
+  not a turn rate.
+- Fixed: the heading is an absolute reading, so it is published whatever
+  the trackers did. Only the integrated position is still gated on
+  "implausible".
+- First attempt used a SECOND lock_.take(50) per iteration and made things
+  worse (loop went 21.5 -> 28.5 ms/tick from contention). Now both updates
+  happen under ONE take.
+
+------------------------------------------------------------------------------
+4. OSCILLATION HUNT - WHAT IT ACTUALLY WAS                       TESTED
+------------------------------------------------------------------------------
+Symptom: big back-and-forth swings on the approach to the final point.
+Wrong guesses, in order, all ruled out by measurement:
+    stick-slip in the trailing turn, IMU sensor lag, actuator lag,
+    sampling beat between the two 20 ms loops, heading signal jumping.
+- A kinematic sim reproduced NONE of them, because it was modelling the old
+  (clamped) cos and perfectly clean sampling.
+- Two measurements were corrupted by the instrumentation itself:
+    * a printf inside the control loop stretched the tick to 24.3 ms
+    * "rate" divided by a hardcoded 20 ms even when a retried odometry read
+      put 40-60 ms between samples, inflating 250 deg/s to ~750
+- The number that settled it: "aim 90 jmp 125 avg 299" with rdfail 0 and a
+  clean 20.0 ms/tick. avg 299 deg/s is the MEAN turn rate over 8 s - about
+  2400 deg of rotation, at the drivetrain's top pivot rate, for one attempt
+  to reach a point 5 in away.
+- Cause: with CORDON_TURN_GAINS kp 3.0, turn_power passes 100 at only
+  33 deg of error. After the "peak > 100" normalisation that is a full-speed
+  opposing-wheel pivot with the drive contribution gone - so above 33 deg
+  there is NO proportional control, it is bang-bang, and it overshoots by
+  construction. kd cannot damp a saturated loop.
+- FIX that worked: CORDON_TURN_GAINS kp 3.0 -> 0.6 (the same kp as
+  TURN_GAINS, already tuned for pivoting in place). kd 6 -> 5.
+- Also added heading.set_derivative_smoothing(CORDON_HEADING_SMOOTHING) with
+  CORDON_HEADING_SMOOTHING = 3. The distance PID always had smoothing; the
+  heading PID was running on raw per-tick differences.
+- These gains were committed on 2026-09-20 as f7b3403 "Tuned constants for
+  drive, turn, cordon turn, and lead" and are still the values in
+  autons.hpp at 2026-10-11.
+
+------------------------------------------------------------------------------
+5. TEMPORARY TELEMETRY STILL IN cordon()            REMOVE BEFORE COMP
+------------------------------------------------------------------------------
+- Marked "TEMPORARY" in src/drive.cpp. Prints on the brain after each leg:
+    line 0  hd swing / rate    robot heading travel, max deg/s
+    line 1  held / rdfail / ms-per-tick / sd     loop health
+    line 3  ticks / flips      flips = turn_error sign changes
+    line 4  maxerr / mindst    NOTE mindst can never read below exit_radius,
+                               the exit check runs BEFORE the telemetry
+    line 5  period             2*ticks*20/flips
+    line 6  aim / jmp / avg    aim swing, samples >400 deg/s, mean rate
+- Also a trace_buf[220] CSV dump (printf + /usd/cordon.csv) after the loop.
+  Nothing prints when running from the controller - stdout has no listener
+  unless "pros terminal" is attached over USB BEFORE the run.
+- Reading it: hd swing >> aim swing = the robot overshoots the aim.
+  hd swing about equal to aim swing = the aim itself is moving.
+- CHANGED SINCE: the CSV dump is now behind the CORDON_TRACE flag and the
+  robot is stopped before it prints (SESSION 2026-10-11, section 7). At
+  2026-10-11 every TEMPORARY block above is still in drive.cpp and
+  CORDON_TRACE is still true.
+
+------------------------------------------------------------------------------
+6. cordon-sim.html + field.png  (project root)                   NOT RUN
+------------------------------------------------------------------------------
+- Standalone browser page, no build step. Runs the real cordon() control law
+  and the real pid.cpp maths against a two-wheel model.
+- Waypoint table (start pose is row "S"), drag nodes and heading sticks on
+  the field, field view with 24 in tiles over field.png, heading and
+  velocity traces, per-tick scrubber.
+- "Copy C++" emits constants AND the path array, labelled by which file each
+  block belongs in. "Save to file" writes a .json path.
+- Paste box takes PATH.JERRYIO output directly.
+- WARNING: this file was never executed - the preview pane renders local HTML
+  as a script-less snapshot. Checked statically only, and one version did
+  ship with a real syntax error (raw newlines inside JS string literals, from
+  a bad heredoc escape). If it opens blank, press F12 and read the console.
+- The drivetrain model (wheel 3.25 in, track 11.5 in, ratio 0.75, motor lag
+  0.1 s) is GUESSED, not from the firmware. Fix it in the page before
+  trusting any speed it reports.
+
+------------------------------------------------------------------------------
+7. PATH.JERRYIO AS A PATH PLANNER   (pathjerryio-cordon-template.txt)
+------------------------------------------------------------------------------
+- No fork needed. The "Move-to-Point Code Gen v0.1" format has a UI-editable
+  output template doing ${x} ${y} ${heading} ${speed} substitution, so it can
+  emit CordonRequest blocks directly.
+- It is HIDDEN until Preferences -> Enable Experimental Features is ticked
+  AND the page is refreshed.
+- Unit of Length defaults to Centimeter. Leave it and every coordinate is
+  2.54x short.
+- Headings need no conversion: it emits 0..360 and cordon() calls
+  normalise_angle() on final_heading, so 270 becomes -90 by itself.
+- The per-path "Speed" box defaults to 30 and is mapped to .lead.
+- PATH.JERRYIO never exports its FIRST control point: exportCode loops over
+  segments and takes segment.last, so n points give n-1 blocks. The robot's
+  start pose is not in the output - set it in the sim's "S" row.
+- A clone (GPL-3.0) is at ..\path.jerryio, 118 MB, shallow. Not needed for
+  any of the above; delete it freely. Building it needs Node, not installed.
+
+------------------------------------------------------------------------------
+CHECK / OPEN (as of this session)
+------------------------------------------------------------------------------
+- MAX_LEAD in src/drive.cpp is now 0.15 (was 0.9). cordon() clamps every
+  request to it, so BOOMERANG_LEAD 0.5 and the 0.6 on waypoint 1 are BOTH
+  being cut to 0.15. If that is deliberate the paths are far straighter than
+  they look on paper.
+  CHANGED SINCE: it was not deliberate. MAX_LEAD raised to 0.6 on 2026-10-11
+  (SESSION 2026-10-11, section 8).
+- DRIVE_MAX_RPM is 200 in config.hpp but the drive is blue geared to 450, so
+  move_velocity gets 200 of a possible 600 - everything runs at a third
+  throttle. Not a bug (the gains absorb it) but it caps auton speed, and
+  raising it makes every tuned gain 3x more aggressive. Still 200 at
+  2026-10-11.
+- turn_at_end on the last point returns Timeout whenever final_turn_gains are
+  all zero - turn_to with zero gains commands zero power and never settles.
+
+
+==============================================================================
+SESSION 2026-09-27  (written up later)
+==============================================================================
+
+------------------------------------------------------------------------------
+1. "PORT OCCUPIED" FROM PROS
+------------------------------------------------------------------------------
+- It means the V5 COM port (controller was COM8), not a network port. Only
+  one program can hold it.
+- Usual causes: an open PROS terminal, VEXcode / V5 utility, a second VS Code
+  window, a serial monitor. A VS Code update was installing at the time.
+- Fixes: close those, or unplug/replug USB. To find the holder, run
+  Sysinternals `handle.exe -a "\Device\USBSER"` as admin.
+- Nothing was found holding it when checked.
+
+------------------------------------------------------------------------------
+2. SECOND WAYPOINT SWINGS OUT AND CRASHES (src/main.cpp)
+------------------------------------------------------------------------------
+- Point 1 drove forward, point 2 reversed. Point 1 had stop_at_end = false,
+  so the robot was still rolling forward when point 2 told it to reverse.
+- Changed point 1 to stop_at_end = true.                              TESTED
+  Result: still swung out ("still does not work").
+- Real cause: the robot ended point 1 facing 45 but needed ~97 to back west
+  to point 2. cordon() started reversing straight away while still ~50 deg
+  off, so it backed off south-west and the turn PID (0.6/deg vs 100% drive)
+  could not pull it back.
+- Suggested by hand: end point 1 facing the way it backs out
+  (final_heading 90), or use turn_at_end. User set point 1 to 90.
+
+------------------------------------------------------------------------------
+3. PIVOT FIRST (src/drive.cpp)                                        TESTED
+------------------------------------------------------------------------------
+- cordon() now turns in place (no drive) while the heading error is over
+  PIVOT_FIRST_DEG = 30, then drives, ramping up from zero (distance PID
+  reset while pivoting).
+- Applies to EVERY point, so curved starts become pivot-then-drive.
+- CHANGED SINCE: hysteresis added, stop pivoting under PIVOT_DONE_DEG = 15
+  (SESSION 2026-10-11, section 7).
+
+------------------------------------------------------------------------------
+4. REVERSE final_heading MEANING - CHANGED, THEN PUT BACK
+------------------------------------------------------------------------------
+- Tried: on reverse points, final_heading = direction of travel (where the
+  back points), and turn_at_end turns the front to final_heading + 180.
+- Tested: point 2 (reverse, final_heading 45, turn_at_end) ended with the
+  front facing the wrong way and spun at the end.                     TESTED
+- Put back to the original: final_heading is ALWAYS where the FRONT points
+  at the end, forward or reverse, and turn_at_end turns to final_heading.
+  This is what the code does now.                               NOT TESTED
+  (at the time of the write-up)
+
+------------------------------------------------------------------------------
+5. OTHER FINDINGS
+------------------------------------------------------------------------------
+- BOOMERANG_LEAD = 0.5 was being clamped to MAX_LEAD = 0.15 (raised to 0.6
+  later, SESSION 2026-10-11 section 8).
+- Each cordon point prints a "# cordon -> x,y ..." trace to the PROS
+  terminal (and /usd/cordon.csv) - send that when a point misbehaves.
+
+------------------------------------------------------------------------------
+6. "NO REVERSE OR LEAD" IN THE TUNER OUTPUT (cordon-sim.html)
+------------------------------------------------------------------------------
+- Question only, no code changed and nothing run on the robot.
+- The tuner does handle both. They are easy to miss because:
+  * Copy C++ writes .lead = BOOMERANG_LEAD (not a number) when a point's
+    lead equals the default lead box. The value is printed once at the
+    top: constexpr double BOOMERANG_LEAD = ...;
+  * .reverse = true is only written for points with "rev" ticked. When it
+    is off the line is left out, since CordonRequest defaults to false.
+- The saved files Downloads/path.json and path (1).json were checked: every
+  point has lead 0.5 and a rev value, 3 of 7 points are rev true.
+- PATH.JERRYIO pastes: the template in pathjerryio-cordon-template.txt has
+  .lead (from the Speed box) but NO .reverse line, so pasted points always
+  come in forward. Set reverse by hand (or tick rev in the tuner) after.
+- Offered, not done: make Copy C++ always print the lead number and
+  .reverse = true/false on every point.
+
+
+==============================================================================
+SESSION 2026-10-02 / 2026-10-03  (subsystems: intake, lift/claw, ports)
+==============================================================================
+
+Everything here is SYNTAX only (arm-none-eabi-g++, no make, nothing run on
+the robot). "NOW:" notes = how the code looks as of 2026-10-11, where it
+changed after this session. Committed by the user on 2026-10-05 as 62fa307
+"added subsytems".
+
+------------------------------------------------------------------------------
+1. NEW DEVICES IN HARDWARE (include/robot/hardware.hpp, src/hardware.cpp)
+------------------------------------------------------------------------------
+- Added motors top_roller, bottom_roller, lift, rotation sensors lift_r,
+  claw_r, and pistons flipper_claw, intake_slider, claw.          SYNTAX
+- Pistons are pros::adi::Pneumatics(port, start_extended, extended_is_low).
+  Port is a letter 'A'-'H'. Only methods: extend(), retract(), toggle(),
+  is_extended(). (No is_retracted(), no set_value().) ADIAnalogIn is a
+  SENSOR, not a piston - using it caused most of the early errors.
+- Constructor list in hardware.cpp reordered to match the header's
+  declaration order.
+- configure(): HOLD brake on rollers, lift, claw motor; reset lift_r/claw_r;
+  all pistons retracted at start.
+- Still open: flipper_claw is built with port CLAW ('A'), the same as
+  claw. Should probably be FLIPPER_CLAW ('B'). Left alone on purpose.
+  Still true at 2026-10-11 (hardware.cpp: flipper_claw(CLAW, false, false)).
+
+------------------------------------------------------------------------------
+2. INTAKE CLASS (include/robot/intake.hpp, src/intake.cpp)         SYNTAX
+------------------------------------------------------------------------------
+- run(speed), run_top(speed), run_bottom(speed), stop() - move_velocity (RPM).
+- lift(), lower(), toggle() - intake_slider piston.
+- Moved from header-only to the normal .hpp (declarations) / .cpp
+  (bodies with Intake::) split.
+- Bug found: run() only drove the top roller after the move.
+  NOW: fixed, run() drives both rollers.
+
+------------------------------------------------------------------------------
+3. LIFT CLASS (include/robot/lift.hpp, src/lift.cpp)               SYNTAX
+------------------------------------------------------------------------------
+- Error "declaration of lift() changes meaning of lift": class and the
+  Robot::lift() accessor had the same name. Class renamed to Lift
+  (classes Capitalised, methods lowercase).
+- armtoggle was missing Lift:: so it was a loose function, not the method.
+- lift.cpp was including intake.hpp instead of lift.hpp.
+- main.cpp: robot::lift::grippertoggle()  ->  robot.lift().grippertoggle();
+  (robot:: = namespace, robot. = the robot variable). Controller A.
+- Added claw_cycle() on controller X: slow up -> stop -> down -> stop.
+  NOW: removed; claw_flip became a piston (port 'D') and X runs armtoggle().
+
+------------------------------------------------------------------------------
+4. ROBOT WIRING (include/robot/robot.hpp, src/robot.cpp)           SYNTAX
+------------------------------------------------------------------------------
+- Robot owns Intake intake_ and Lift lift_, declared AFTER hardware_,
+  with accessors robot.intake() / robot.lift().
+- Constructor list order must match declaration order
+  (hardware_ -> intake_ -> interrupts_ -> lift_ -> ...).
+- NOW: lift_ was moved below odometry_ on 2026-10-11 because Lift takes
+  Odometry& (SESSION 2026-10-11, section 10).
+
+------------------------------------------------------------------------------
+5. "LEFT SIDE OVERPOWERS RIGHT" (drive)                            SYNTAX
+------------------------------------------------------------------------------
+- Found: Drivetrain::set_brake_mode and configure() used
+  MotorGroup::set_brake_mode, which in PROS 4 only sets motor index 0.
+  Changed to set_brake_mode_all in src/drive.cpp and src/hardware.cpp.
+- Found: left drive ports (then -20,-19,-18) were also used by AI Vision
+  (20), YROT (19), XROT (18); CLAW_FLIP shared port 1 with top_roller.
+  Sensors moved to free placeholder ports.
+  NOW: ports changed again (left -11,-12,-13 / right 18,19,20, XROT 6,
+  YROT 1, AI Vision 13, IMU 17 + second IMU 18 placeholder).
+  CHECK: IMU_PORT2 = 18 is also a right drive port.
+  CHECK: YROT_PORT = 1 and TOP_ROLLER = -1 share port 1;
+         XROT_PORT = 6 and BOTTOM_ROLLER = -6 share port 6.
+  CHECK: AIVISION_PORT = 13 and the left drive's -13 share port 13
+         (found 2026-10-11 while checking this log against the code).
+- Root cause of the overpowering was NOT confirmed. Next step was to
+  drive straight and read brain lines 4/5 (per-motor RPM): a 0 or
+  negative right motor = that motor is the problem.
+
+------------------------------------------------------------------------------
+NOTES LEARNED
+------------------------------------------------------------------------------
+- Header (.hpp) = what exists (class, method list, members).
+  Source (.cpp) = how it works (bodies with ClassName::).
+- A header nobody #includes is never compiled - that's why a broken
+  intake.hpp still "built".
+- get_digital = held (rollers); get_digital_new_press = once per press
+  (pistons/toggles). Roller buttons: one if / else if / else chain.
+- explicit on one-argument constructors; public = commands,
+  private = hardware/state.
+- Insert key toggles overtype mode in VS Code.
+
+
+==============================================================================
+SESSION 2026-10-08  (second IMU, auton selector; written up afterwards)
+==============================================================================
+
+This session DID compile, using the PROS tools from the VS Code extension
+(pros.exe path in the header of this file), so BUILDS here means a real make.
+
+------------------------------------------------------------------------------
+1. SECOND IMU - IGNORE ONE THAT IS WRONG (src/odometry.cpp)
+------------------------------------------------------------------------------
+- New Odometry::fused_imu_raw() gives the heading from both IMUs. Used by
+  the odometry task, imu_heading() (turns) and set_pose().
+- Drops an IMU that is:
+    * unplugged / erroring / still calibrating
+    * jumping faster than the IMU can turn (1000 deg/s + 5 deg slack),
+      e.g. it browned out and came back at 0
+    * more than 5 deg away from the other one (keeps whichever stayed with
+      the last good heading)
+  A dropped IMU comes back by itself once it agrees again (within 5 deg).
+- When both agree they are averaged properly across 0/360. The old
+  (h1 + h2) / 2 turned 359 and 1 into 180.
+- Old bug fixed: imu_heading() (turns) only read inertial1, while
+  set_pose() worked out the offset from the average.
+- Brain line 2 shows "IMU1x" / "IMU2x" when one is being ignored, "noIMU"
+  when both are.
+- Known gap: an IMU that freezes on a value without reporting an error
+  cannot always be caught with only two IMUs.
+- Every run since uses this (tune offsets reads fused_imu_raw()).    TESTED
+  Unplugging one IMU mid-run to check the drop-out has NOT been tested.
+- IMU_PORT2 = 18 is still a placeholder in include/robot/hardware.hpp, and
+  it collides with the right drive (SESSION 2026-10-02/03, section 5).
+
+------------------------------------------------------------------------------
+2. BOTH IMUs CALIBRATED AT STARTUP (src/main.cpp)                  BUILDS
+------------------------------------------------------------------------------
+- initialize() still called inertial.reset(), which no longer existed after
+  the IMU was split in two, so the project did not build.
+- Now starts both calibrating together and waits for both (no extra ~2 s).
+
+------------------------------------------------------------------------------
+3. AUTON SELECTOR CREATED (include/robot/autons.hpp, src/autons.cpp)
+------------------------------------------------------------------------------
+- Gains / radii / timeouts moved from main.cpp into autons.hpp.
+- One function per path, listed in AUTONS[]; autonomous() runs the selected
+  one. Brain buttons: left = alliance, centre = yellow side, right = path.
+- The old auton from autonomous() became "test path" (now "basic close").
+  It really ran with drive kp 6 (a second DRIVE_GAINS inside autonomous()
+  overrode the "tuned" 4); kept as kp 6 with a comment.
+- Yellow = which side (LEFT / RIGHT) the yellow pins start on.
+- start_at(x, y, heading) at the start of a path overwrites the pose from
+  the vision fix done in initialize(), same as the old auton did.
+- CHANGED SINCE: blue mirroring (BLUE_MIRROR) and ctx.pick(left, right)
+  from this session were replaced by DRAWN_ALLIANCE and convert() (SESSION
+  2026-10-09, section 3): draw red + yellow left; yellow right = reflect
+  across x = y, other alliance = rotate 180. Selection moved to line 7
+  (SESSION 2026-10-11, section 1).
+  Selector itself: TESTED on 2026-10-11.
+
+------------------------------------------------------------------------------
+4. PATH.JERRYIO - HOW TO CHANGE A PATH
+------------------------------------------------------------------------------
+- Full notes in pathjerryio-cordon-template.txt. Short version:
+  Format "Move-to-Point Code Gen v0.1", unit INCH, template from that file,
+  Speed box = lead (default 30 is wrong), Copy Code, paste into the path
+  function in src/autons.cpp. One path on the canvas only. On the last
+  point set exit_radius FINAL_RADIUS and stop_at_end true.
+
+
+==============================================================================
+SESSION 2026-10-09  (auton mirroring, written up afterwards)
+==============================================================================
+
+Nothing in this session was run on the robot. Every src/*.cpp was
+syntax-checked with the PROS arm-none-eabi-g++ (no errors); a full make
+could not run in that shell. Everything below is at most SYNTAX.
+
+------------------------------------------------------------------------------
+1. HOW TO ADD / CALL AN AUTON (src/autons.cpp)
+------------------------------------------------------------------------------
+- Don't call path functions yourself. autonomous() calls
+  run_selected_auton(), which runs whatever the brain selector shows.
+- To add one: write `MotionResult name(const AutonContext& ctx)`, then add
+  {"name", name} to AUTONS[]. First entry = default if nobody touches it.
+- Multiple paths:
+  * Several points in ONE array = driven back to back. Middle points:
+    stop_at_end = false, exit_radius = WAYPOINT_RADIUS.
+  * Separate arrays (path1, path2, ...) each with ctx.run(), when something
+    happens in between (intake, lift, wait). ctx.run() stops the drive at
+    the end of every array. After every run except the last:
+        if (result != MotionResult::Settled) return result;
+  CHANGED SINCE: per-point .on_start / .at_end / .pause_after now cover
+  most "something in between" cases without splitting the array (SESSION
+  2026-10-11, section 9).
+
+------------------------------------------------------------------------------
+2. AUTON COMPILE ERRORS FIXED (src/autons.cpp)                     SYNTAX
+------------------------------------------------------------------------------
+- A stray `}  // namespace` after no_yellow closed the anonymous namespace
+  early, so the selector code fell outside it and every line after it
+  errored. Removed, plus a stray `} ` after both_yellow.
+- Stray "o9" typed onto the end of selected_auton_name(). Removed.
+
+------------------------------------------------------------------------------
+3. MIRRORING REWRITTEN (include/robot/autons.hpp, src/autons.cpp)   SYNTAX
+------------------------------------------------------------------------------
+- Draw EVERY path in path.jerryio as RED with the yellow pins on the LEFT.
+  DRAWN_ALLIANCE = Alliance::Red. Selector defaults to RED.
+  (Went blue first, then changed to red at the user's request.)
+- The other three cases are made automatically by ctx.run() and
+  ctx.start_at() (swap_yellow / swap_alliance / convert in autons.cpp):
+      Red  + LEFT   as drawn
+      Red  + RIGHT  (x, y) -> (y, x)       heading h -> 90 - h
+      Blue + LEFT   (x, y) -> (-x, -y)     heading h -> h + 180
+      Blue + RIGHT  both of the above
+- Old code was wrong: blue was a left/right flip (BLUE_MIRROR = FlipX),
+  which would put red 2 on a yellow pin; yellow left/right was a separate
+  hand-written value (ctx.pick).
+- ctx.pick(left, right) REMOVED: yellow right is now automatic, so pick
+  would swap twice. Placeholder paths just use their left values.
+- A path that really differs by yellow side (extra pin, etc.):
+      if (ctx.yellow == YellowPos::Right) { ... }
+  Points inside are still written red / yellow-left and get converted.
+- Heading formula checked numerically: a robot driving at h drives at
+  90 - h after the x <-> y swap.
+
+------------------------------------------------------------------------------
+4. FIELD LAYOUT CHECK (field.png)
+------------------------------------------------------------------------------
+- Measured every red / blue / yellow piece in field.png, inches, origin
+  centre, +y up (same frame as cordon-sim.html).
+- Red / blue split = the double line top-left to bottom-right (y = -x).
+- Half turn (red -> blue): red 2 -> blue 2, red 3 -> blue 3, yellow 1 ->
+  yellow 1, yellow 4 -> yellow 4, red corner zones -> blue zones, cross arm
+  colours swap. All match.
+- x <-> y swap (yellow left -> right): red 2 <-> red 3, yellow 1 <-> yellow
+  4, crosses and wall goals onto each other, colours unchanged. All match.
+- EXCEPTION: corner zones run along the left wall; the swap lays them
+  along the bottom wall. A point parked in a corner zone needs its own
+  `if (ctx.yellow == YellowPos::Right)` branch.
+- Assumes path.jerryio's coordinate system is origin centre, +y up. If it
+  is anything else, the swap is across the wrong diagonal.
+
+------------------------------------------------------------------------------
+TO DO (from this session)
+------------------------------------------------------------------------------
+- On the field: run one short path in all four selections (red/blue x
+  left/right) and check each goes where expected.             NOT TESTED
+- basic close starts at (0, -61): make sure it was drawn as red / yellow
+  left, otherwise re-draw it.
+
+
+==============================================================================
+SESSION 2026-10-11  (selector, offsets, smoothness, boomerang, lift)
+==============================================================================
+
+Nothing was compiled from the chat (no PROS tools in that shell); every
+build was done from VS Code.
+
+------------------------------------------------------------------------------
+1. AUTON SELECTOR (src/autons.cpp)
+------------------------------------------------------------------------------
+- Brain touch buttons (bottom of the brain screen, not the controller):
+  left = alliance, centre = yellow side, right = path.
+- Whole selection is now on ONE line, line 7: "RED | LEFT | basic far".
+  Before, it used lines 5-7 and opcontrol's drive telemetry (lines 3-6)
+  wiped lines 5-6 straight away.                                    TESTED
+- Default path (first in AUTONS[]) changed to "basic far" for tuning.
+  Swap it back with "basic close" for matches.                      TESTED
+- Path list now: basic far, basic close, awp, both yellow, no yellow,
+  skills, tune offsets, turn test, do nothing.
+- The AUTONS[] names for both yellow / no yellow carry long comments and
+  get cut off on line 7. Wording cleaned up later on 2026-10-11 (they now
+  read "both yellow (other teams poop)" / "no yellow cuz where poop");
+  still too long for line 7, shorten them before matches.
+
+------------------------------------------------------------------------------
+2. RUNNING AUTONS WITHOUT A COMPETITION SWITCH (src/main.cpp)
+------------------------------------------------------------------------------
+- autonomous() body moved into run_auton(), same safety cut-offs (drive too
+  hot > 55 C, driver takeover). autonomous() just calls it.
+- Controller LEFT arrow (driver control) = run the selected auton.   TESTED
+- Controller R1 = run the turn test (see 6).                     NOT TESTED
+- Drive goes back to coast after either.
+
+------------------------------------------------------------------------------
+3. INTERRUPTS / "cut by" (src/interrupt.cpp, src/diagnostics.cpp)
+------------------------------------------------------------------------------
+- "cut by X" on line 7 = the auton was stopped early by X.
+  driver takeover = a stick moved; drive too hot = motor > 55 C.
+- Driver takeover now compares sticks to where they sat at the start (stick
+  drift / resting thumb no longer counts) and must be held 3 polls (~60 ms),
+  so brushing a stick while pressing LEFT does not cut it.
+- An empty reason now shows "cut by unknown" instead of a blank.
+- The blank "cut by" seen this session came from tune offsets giving up
+  without a reason; fixed, it now says no IMU heading / no X tracker /
+  no Y tracker / spin took >30s.                                     TESTED
+
+------------------------------------------------------------------------------
+4. TRACKING WHEEL OFFSET TUNING (src/autons.cpp "tune offsets")
+------------------------------------------------------------------------------
+- Spins 5 turns clockwise, 5 counter-clockwise (power 35, was 50) and
+  works out each tracker's offset from the arc it reads:
+      x_off =  sum(dx) / sum(dh)      y_off = -sum(dy) / sum(dh)
+  cw and ccw are averaged so direction-independent slip cancels.
+  Same method as SESSION 2026-09-17/18 section 4, now a permanent auton.
+- Results stay on brain lines 3-6 after it ends (opcontrol telemetry is
+  paused until the next auton runs; auton_screen_held()). Also printed to
+  the PROS terminal. Controller-screen printing was tried and removed.
+- What we found:
+  * First runs were inconsistent (x cw -1.09 / ccw 0.09, then -1.9 / -0.9).
+  * Cause: the tracking wheels were FLIPPED. After fixing that the readings
+    became consistent.
+  * Line 5 "current" is only the config value, not a measurement.
+  * The robot really slides ~3" while spinning; that is normal and only
+    shifts the result by ~0.1.
+- include/robot/config.hpp now (set by user):
+      x_tracker_offset = -0.02   (was -4.37)
+      y_tracker_offset =  0.28   (was  0.63)
+  Note: the last two matching runs read X ~0.29 and Y ~-0.05, i.e. these
+  set values look swapped vs. lines 3/4. Re-run tune offsets to confirm.
+- Ports XROT_PORT = 6, YROT_PORT = 1 are still marked "placeholder" in
+  include/robot/hardware.hpp, and both collide with roller motor ports
+  (SESSION 2026-10-02/03, section 5). Worth confirming.
+
+------------------------------------------------------------------------------
+5. PID TUNER - ADDED, THEN REMOVED
+------------------------------------------------------------------------------
+- Brain buttons were temporarily: left = pick gain, centre -0.1, right +0.1.
+- It always ran basic far, so turn gains could not be tested with it.
+- Removed completely at user's request. Every path uses its own gains again
+  (DRIVE_GAINS / CORDON_TURN_GAINS / TURN_GAINS in autons.hpp).
+- No tuned values were saved from it.
+
+------------------------------------------------------------------------------
+6. TURN TEST (src/autons.cpp, controller R1)                     NOT TESTED
+------------------------------------------------------------------------------
+- Turns to 90, 0, 180, 0 with TURN_GAINS. Lines 3-6 show each turn's error
+  (measured 0.3 s after, so overshoot shows), time in ms, and result.
+  TURN_TIMEOUT is 1.0 s, so the 180 may time out.
+- Also selectable as "turn test" on the brain.
+
+------------------------------------------------------------------------------
+7. SMOOTHNESS FIXES (src/odometry.cpp, src/drive.cpp)
+------------------------------------------------------------------------------
+- Odometry now ticks on a fixed 10 ms cadence (was a flat 20 ms delay plus
+  sensor reads = ~25 ms). Control loops are 20 ms, so the carrot used to
+  freeze one tick then jump double. Still sleeps >= 1 ms every tick.
+  Check: line 1 "held N/M" after each point, N should be ~0.
+- Pivot hysteresis: starts pivoting above 30 deg error, keeps pivoting
+  until under 15 deg (one threshold made the drive flick on/off).
+- CORDON_TRACE flag for the per-point trace dump. It printed ~220 lines at
+  the end of every point while the robot coasted. Currently TRUE so we can
+  collect data; set FALSE for matches.
+- The robot is now stopped BEFORE the trace dump (it used to roll on during
+  the dump even with stop_at_end true).
+- Result: user reported it still oscillates on the second point. Trace
+  output from a run has not been looked at yet.                      TESTED
+
+------------------------------------------------------------------------------
+8. BOOMERANG LEAD (src/drive.cpp, src/autons.cpp)
+------------------------------------------------------------------------------
+- Found: MAX_LEAD was 0.15, so EVERY lead was clamped to 0.15. The "tuned"
+  BOOMERANG_LEAD = 0.5 and basic far's .lead = 30 all ran as 0.15.
+  (Flagged as a question in SESSION 2026-09-18/19 CHECK / OPEN and again
+  in SESSION 2026-09-27 section 5; this is where it was acted on.)
+- basic far's .lead = 30 values replaced with BOOMERANG_LEAD (lead is a
+  fraction of distance left; >= 1 puts the carrot behind the robot).
+- Second point of basic far ended at ~103 instead of final_heading 135:
+  lead 0.09 + exit_radius 3 + no turn_at_end meant nothing turned it.
+- Chose the curve option over turn_at_end:
+  * MAX_LEAD raised to 0.6.
+  * basic far point 2: lead 0.09 -> 0.45, exit_radius 3 -> FINAL_RADIUS.
+- Side effect: first point (lead 0.33) then over-turned to 146.      TESTED
+  basic close and placeholder paths now really run lead 0.5. Re-check
+  basic close; if too wide, lower BOOMERANG_LEAD to ~0.15-0.25.
+- Fix for the over-turn: inside 7.5" (BOOMERANG_CLOSE_IN) a boomerang
+  point stops aiming at the carrot, steers for final_heading, and never
+  stops to pivot. Crossing the line through the point (square to the
+  approach) counts as arrived, so a near miss cannot drive off until the
+  timeout. lead = 0 points unchanged.                            NOT TESTED
+
+------------------------------------------------------------------------------
+9. SUBSYSTEMS IN PATHS (include/robot/drive.hpp, autons.hpp)    NOT TESTED
+------------------------------------------------------------------------------
+- New optional fields on every path point, written AFTER .reverse and in
+  this order:
+      .on_start    = [&] { ctx.robot.intake().run(1000); },  // as it sets off, keep quick
+      .at_end      = [&] { ctx.robot.lift().grippertoggle(); }, // on arrival, path waits
+      .pause_after = 1.0,                                    // sit still N seconds
+- A pause stops the drive even on a pass-through point; a stick still
+  cuts it short. If a point times out, its at_end and pause are skipped.
+- ctx.wait(seconds): interruptible replacement for pros::delay in paths.
+- basic far point 1 already uses .pause_after = 1.
+- Not done yet: lift moving WHILE driving. Lift::toggle() and drop() block
+  until the lift arrives, and Lift::move_to() has no body (see 11).
+
+------------------------------------------------------------------------------
+10. LIFT HEIGHT IN ODOMETRY + LIFT PID (src/odometry.cpp, src/lift.cpp,
+    include/robot/config.hpp, robot.hpp/.cpp)                    NOT TESTED
+------------------------------------------------------------------------------
+Written by the user with the assistant reviewing each step. Nothing was
+built or run on the robot from this chat.
+
+Lift height (odometry):
+- Odometry reads the lift rotation sensor (lift_r) every tick next to the
+  IMU / trackers, outside the lock, using read_ticks() (catches PROS_ERR, so
+  an unplugged sensor can't read as millions of inches).
+- lift_height_ (inches) is written in TWO places, both under lock_:
+    * main locked block, next to heading_, outside if (!implausible)
+      (it's an absolute reading like heading, not integrated)
+    * the tracker-failure branch: if ((h_ok || lift_ok) && lock_.take(50))
+      so a dead tracker or dead IMU can't freeze the lift height.
+- Mistake caught on the way: the second write was first pasted INSIDE the
+  already-locked block. pros::Mutex isn't recursive, so it would wait 50 ms
+  for itself every tick (odometry 20 ms -> ~70 ms). Removed.
+- New: lift_height(), reset_lift_height(h) (picks lift_zero_deg_ so the
+  current angle reads as h), lift_stage() / set_lift_stage().
+- config.hpp: SPROCKET_DIAMETER = 4.0 (placeholder, measure),
+  LIFT_IN_PER_DEG = sprocket circumference / 360, LIFT_IN_PER_STAGE = 3,
+  LiftGains {kp, ki, kd, kG}, LiftConfig (soft limits, tolerance, caps).
+- Odometry is NOT reset-zeroed in start() on purpose; the lift should only
+  be zeroed when it is physically at the bottom.
+
+Lift PID (lift.cpp):
+- Lift now takes Odometry& (Lift(hw, odometry)). robot.hpp: lift_ moved
+  BELOW odometry_ (construction order) and robot.cpp init list matches.
+- toggle(gains, timeout): next stage (wraps after 8), target =
+  stage * LIFT_IN_PER_STAGE. drop(gains, timeout): target 0. Both block,
+  run Pid + kG every 20 ms until within 0.5" or timeout, then hold with kG.
+- armtoggle() bug fixed: it checked claw_flip but retracted claw.
+- Gains: kG first went into PidGains as a 4th field (kg); moved out into its
+  own LiftGains struct so drive/turn gains stay kp/ki/kd. kG also removed
+  from LiftConfig so it's defined once. LIFT_GAINS {0, 0, 0, 600} and
+  LIFT_TIMEOUT = 1.5 s now live in include/robot/autons.hpp.
+- Uses the existing Pid class (pid.cpp already does I and D, with integral
+  zone / sign-flip reset / cap): Pid({kp, ki, kd}, LIFT_INTEGRAL), output +
+  kG. LIFT_INTEGRAL {1.0 in, 2000 mV} and LIFT_SETTLE_IN at top of lift.cpp.
+- First version of the loop had: undeclared controller/gains (compile
+  error, not a missing #include), move_velocity with a mV output (RPM
+  expected), no pros::delay (starves odometry, height freezes), and
+  while (height < target) (could only go up). All fixed.
+- A live controller tuner (Lift::tune(), LEFT pick gain, R1/R2 +/-, L1/L2
+  step test, values on controller screen, CSV to terminal) was suggested
+  and NOT added; the user went with the blocking toggle/drop instead.
+
+Open problems found at write-up (will stop the build or give wrong height):
+- Odometry::lift_stage() is declared but has no body; toggle() calls it, so
+  the link fails ("undefined reference").
+- Lift::move_to() is declared but has no body (nothing calls it yet).
+- hardware.cpp still has lift_r.reset(), which sets the position to the
+  sensor's ABSOLUTE angle (0-359). Should be lift_r.reset_position() so the
+  bottom reads 0.
+- lift_stage is a double but toggle() stores it in an int.
+- LiftConfig isn't used yet; toggle/drop hard-code +/-12000 and 0.5".
+- No lift height on the brain screen yet (add "L:%.1f" to the line 2 print).
+- reset_lift_height(0) is never called; call it in initialize() with the
+  lift resting at the bottom.
+- Nothing calls toggle()/drop() yet (no buttons / path steps).
+- lift.cpp includes config.hpp twice; diagnostics.hpp unused.
+- 2026-10-11 check: every .cpp passes arm-none-eabi-g++ -fsyntax-only.
+  Link step not checked (no pros make in this shell).            SYNTAX
+
+------------------------------------------------------------------------------
+11. SUBSYSTEM AT / BETWEEN WAYPOINTS - DESIGN NOTES          NOT IMPLEMENTED
+------------------------------------------------------------------------------
+- Question was: how do I move a subsystem between the waypoints of a path.
+  The answer covered three levels. The first two turned out to already be
+  built (section 9); the answer had been written against the code as it
+  stood on 2026-09-19, before autons.cpp / intake.cpp / lift.cpp existed.
+- Level 1, split the path: run the approach, call the subsystem, run the
+  rest. No new code. Gets unreadable past two or three actions because the
+  path stops being one table.
+- Level 2, one hook per point: a std::function on each step, fired after
+  the point settles. This is exactly what .on_start / .at_end /
+  .pause_after already do. Worth keeping from the discussion: the function
+  must NOT live on CordonRequest itself (it is passed by value into
+  cordon() and would drag <functional> into drive.hpp), and a point that
+  times out must not fire its action or you clamp on empty air after a
+  failed approach. Both already correct in the code.
+- If a subsystem is ever added from scratch: ports + device member in
+  include/robot/hardware.hpp, ctor init list in src/hardware.cpp, member on
+  Robot - and the declaration-order comment in robot.hpp matters, odometry_
+  before anything that takes Odometry& (what Lift does now).
+- Level 3, moving a subsystem WHILE the robot drives, is still open.
+  Confirmed why: Lift::toggle() (lift.cpp:29) and Lift::drop() (lift.cpp:53)
+  are blocking while(true) loops on pros::delay(20) that return only when
+  the lift arrives or times out, so calling either from .on_start or
+  .at_end parks the drive for the whole lift motion. Lift::move_to() is
+  declared in lift.hpp and has no body at all. .on_start is NOT concurrent.
+- Three ways looked at. None were written, none compiled, none run:
+  * pros::Task holding the subsystem state machine, ticking every 20 ms
+    while cordon() drives. Simplest if the subsystem has real state (run
+    until a sensor says stop, then reverse). MUST sit at a lower priority
+    than the odometry task or it starves the tracker again - the same
+    failure fixed in c21625f (SESSION 2026-09-05, section 1).
+  * An Actions class built next to Interrupts: same shape (predicate +
+    callback + fire-once), polled from the poll site already in cordon's
+    loop (src/drive.cpp:273). This is the one that lets a subsystem fire
+    partway along a segment on a pose test ("start intake once y > -40")
+    instead of only at a point.
+  * Blocking at a point, i.e. what section 9 already does. Fine for the
+    gripper, useless for a lift that should rise while the robot moves.
+- Do NOT do it with an Interrupts predicate's side effect. A predicate
+  returning true aborts the motion, and one that does work and returns
+  false reads as a bug to whoever opens interrupt.cpp next.
+- Two traps checked against the current code, both already handled, no
+  change needed - just use the existing tools:
+  * A bare pros::delay inside .on_start/.at_end stops Interrupts being
+    polled, so driver takeover and the >55 C cut-off go deaf for that
+    window. ctx.wait() (src/autons.cpp:460) and .pause_after already poll;
+    use them instead of pros::delay anywhere inside a path.
+  * .on_start on a pass-through point (stop_at_end false, exit_radius
+    WAYPOINT_RADIUS 6) fires while the robot is still rolling several
+    inches short of the point. Right for intake().run, wrong for anything
+    that blocks - the robot coasts through it.
+
+------------------------------------------------------------------------------
+TO DO NEXT
+------------------------------------------------------------------------------
+- Lift: add Odometry::lift_stage() body, change lift_r.reset() to
+  reset_position(), build. Then raise the lift by hand and check height
+  reads 0 at the bottom, goes UP, and matches a tape measure (adjust
+  SPROCKET_DIAMETER; if it goes negative, lift_r.set_reversed(true)).
+- Lift tuning order: kG first (holds mid-air with kp=kd=0), then kp, then
+  kd, ki only if it stops short. Gains are mV per inch (kp ~300-1500).
+- Run basic far with the near-end boomerang fix; check point 1 ends ~100 and
+  point 2 ends ~135.
+- Send the PROS terminal trace for the oscillating point (aim / head /
+  turn_err columns) to find the cause.
+- Re-run tune offsets to confirm x/y aren't swapped.
+- Test the R1 turn test and tune TURN_GAINS.
+- Re-check basic close now that lead is real.
+- Fix the four port collisions in hardware.hpp (see CURRENT STATE CHECK at
+  the end of this file) before plugging in the rollers / second IMU / AI
+  Vision.
+- Subsystem while driving: pick a pros::Task or an Actions class (see 11)
+  before writing anything; toggle()/drop() block and move_to() has no body.
+- Before matches: CORDON_TRACE = false, default path back to the match
+  auton, shorten the two long AUTONS[] names.
+
+
+==============================================================================
+SESSION 2026-10-11  (game analysis: scoring trainer - RESEARCH ONLY)
+==============================================================================
+
+Started 2026-09-23, picked up 2026-10-11. Goal: a practice tool that randomly
+generates an Override field layout and times you guessing both Alliance
+scores the way you read a field at 0:00 - including the Auton Bonus and AWP.
+
+NOTHING WAS BUILT AND NOTHING WAS TESTED. No robot code was touched. What
+came out of it is the rule research below, pulled from the official manual
+so that whatever gets written scores the way a referee does.
+
+------------------------------------------------------------------------------
+1. WHICH GAME / WHICH MANUAL
+------------------------------------------------------------------------------
+- 2026-2027 V5RC game = Override.
+- Newest manual found: Version 1.0, released 2026-07-02.
+  https://content.vexrobotics.com/docs/2026-2027/override/files/v5rc-override-1.0.pdf
+  (0.1.2 of 2026-05-14 also pulled. 1.1 / 1.2 / 2.0 at that URL are 404.)
+- Official Q&A: https://events.vex.com/V5RC/2026-2027/QA   (PDF: /faqs/51/pdf)
+- How to read them: curl the PDF, then python + pypdf (pip install pypdf).
+  WebFetch gets 403 from vexrobotics.com and manuals.plus, and the 0.1.2 PDF
+  is 14 MB which is over WebFetch's size limit.
+
+------------------------------------------------------------------------------
+2. SCORING  (manual v1.0, rules <SC1>-<SC6>)
+------------------------------------------------------------------------------
+Point table:
+      Autonomous Bonus             12 points
+      Each Scored Alliance Pin      5 points
+      Each Scored yellow Pin       10 points
+      Each Robot in the Midfield    8 points
+
+- <SC2> PLACED. A Pin is Placed if it is partly or entirely nested with a
+  Goal, or with a Cup that is itself nested with another Placed Pin - AND
+  each Goal / Cup half it nests with holds at most one Pin half.
+- <SC3> SCORED. A Pin has two halves and can have 0, 1 or 2 Scored halves.
+  A half only Scores if it stays fully visible, i.e. NOT partly or fully
+  inside the OPAQUE (gray) half of a Cup. Inside the clear half still counts.
+      a. each visible red half    ->  5 to red
+      b. each visible blue half   ->  5 to blue
+      c. each visible yellow half -> 10 to whoever Owns that Pin
+  So scoring is PER HALF, not per Pin. A yellow/yellow Pin that is Placed,
+  Owned and fully visible is worth 20.
+- <SC4> A Toggle only counts as set to a colour if it is fully seated flat
+  against its mount AND not being touched by a Robot. Otherwise it is
+  neutral (yellow) by default.
+- <SC5> OWNERSHIP of yellow halves:
+      in a Quadrant  - the Alliance that Quadrant's Toggle is set to.
+                       Toggle on yellow = yellow there scores nothing.
+      in the Midfield- whoever ends the Match with MORE Robots in the
+                       Midfield. Equal count = Midfield yellow scores
+                       nothing for either Alliance.
+- <SC6> A Robot is "in the Midfield" if ANY part of it is inside the infinite
+  vertical projection of the Midfield at the end of the Match.
+- The manual's own worked example (one stack, three Toggle states) - use this
+  to check the scoring function before trusting it:
+      Toggle yellow  ->  red 15 / blue  5
+      Toggle blue    ->  red 15 / blue 35
+      Toggle red     ->  red 45 / blue  5
+
+------------------------------------------------------------------------------
+3. AUTON BONUS AND AWP  (<SC7>, <SC8>)
+------------------------------------------------------------------------------
+- Auton Bonus is 12 to whoever is ahead when auton ends. A tie, including
+  0-0, gives 6 to each. Midfield points are NOT counted when comparing auton
+  scores. Any violation in auton hands the bonus to the other Alliance;
+  if both violate, nobody gets it.
+- AWP needs all three, with no violations:
+      1. at least 7 Pins Scored for you
+      2. at least 3 Goals each holding at least 2 Pins Scored for you
+      3. neither Robot touching the Field Perimeter
+  1 and 2 ignore anything in Quadrants on the opponent's side of the
+  Autonomous Line.
+- Q&A 3179 (2026-06-30): "Pins Scored for your Alliance" INCLUDES owned
+  yellow Pins, not just red/blue ones. 5 blue + 2 owned yellow = 7, valid.
+- The manual says the 2026-09-03 update makes AWP harder for events that
+  qualify straight to Worlds (its example: 8 Pins and/or 4 Goals). We never
+  found a manual newer than 1.0, so that wording is UNCONFIRMED. Build with
+  7 / 3 as the default and keep those two numbers easy to change.
+
+------------------------------------------------------------------------------
+4. FIELD CONTENTS  (what the random layout generator has to draw from)
+------------------------------------------------------------------------------
+- 56 Cups: 20 Match Loads (10 red, 10 blue), 24 start gray side up,
+  12 start clear side up.
+- 63 Pins: 4 red/blue, 20 red/yellow (2 preload + 10 match load + 8 on field),
+  20 blue/yellow (same split), 19 yellow/yellow (2 match load + 17 on field).
+- 9 Goals: 2 red, 2 blue, 4 short neutral, 1 tall neutral in the Midfield.
+- 4 Toggles, one per Quadrant, centred on each Field wall.
+- 4 Quadrants. Per Q&A 3180, Tournament Manager calls them Red 1, Red 2,
+  Blue 1, Blue 2, and Red 1 is the one next to the red Alliance Station.
+- Match = 15 s auton + 1:45 driver. Endgame = the last 10 s.
+- field.png in this folder is an overhead Override field.
+
+------------------------------------------------------------------------------
+NEXT STEPS  (none of this is written yet)
+------------------------------------------------------------------------------
+- Where it lives: cordon-sim.html is already a single-file HTML tool that
+  runs by double-clicking, no PROS and no Python. Same shape fits here.
+- Generator: random Pins and Cups in the 9 Goals, random Toggle states,
+  random robot positions in and out of the Midfield, plus an auton snapshot
+  so the Auton Bonus and AWP can be asked about too.
+- Scorer: per half, following <SC3> and <SC5> above. Check it against the
+  15/5, 15/35, 45/5 example in section 2 first.
+- Ask for: red total, blue total, who took the Auton Bonus, who got AWP.
+  Time each answer and keep a running average.
+
+
+==============================================================================
+CURRENT STATE CHECK  (2026-10-11, read from the code while tidying this log;
+                      nothing was run)
+==============================================================================
+
+Port collisions in include/robot/hardware.hpp, all live right now. Every
+one of these ports is still commented "placeholder":
+      IMU_PORT2     = 18    vs  RIGHT_PORTS   {18, 19, 20}
+      YROT_PORT     =  1    vs  TOP_ROLLER    = -1
+      XROT_PORT     =  6    vs  BOTTOM_ROLLER = -6
+      AIVISION_PORT = 13    vs  LEFT_PORTS    {-11, -12, -13}
+  Free: IMU_PORT1 17, LIFT_ROT_PORT 3, LIFT_PORT 5.
+  ADI: CLAW_FLIP 'D', FLIPPER_CLAW 'B', CLAW 'A', INTAKE_SLIDER 'C' - but
+  hardware.cpp builds flipper_claw with CLAW ('A'), so 'B' is unused and
+  two pistons share 'A' (SESSION 2026-10-02/03, section 1).
+
+Open items confirmed still open in the code:
+- Odometry::lift_stage() declared (odometry.hpp:68), no body. Lift::toggle()
+  calls it; the link will fail until it is written.
+- Lift::move_to() declared (lift.hpp), no body; nothing calls it.
+- hardware.cpp configure(): lift_r.reset(), not reset_position().
+- MotorGroups built with no gearset; DRIVE_MAX_RPM = 200. Cartridge colour
+  still unconfirmed (SESSION 2026-09-05 section 6, SESSION 2026-09-18/19
+  CHECK / OPEN).
+- drive.cpp: CORDON_TRACE = true, and every TEMPORARY telemetry block from
+  SESSION 2026-09-18/19 section 5 is still in cordon().
+- AUTONS[0] is "basic far" (tuning default), not the match auton.
+
+Values in the code right now (autons.hpp / config.hpp / drive.cpp):
+      DRIVE_GAINS         {4.0, 0.0, 4.0}
+      CORDON_TURN_GAINS   {0.6, 0.0, 5.0}
+      TURN_GAINS          {0.6, 0.0, 1.25}
+      HEADING_HOLD_GAINS  {0.0, 0.0, 0.0}
+      LIFT_GAINS          {0.0, 0.0, 0.0, kG 600}
+      WAYPOINT_RADIUS 6.0     FINAL_RADIUS 2.0
+      BOOMERANG_LEAD 0.5      MAX_LEAD 0.6      BOOMERANG_CLOSE_IN 7.5
+      CARROT_EPSILON_IN 1.5   CORDON_HEADING_SMOOTHING 3
+      PIVOT_FIRST_DEG 30      PIVOT_DONE_DEG 15
+      DRIVE_TIMEOUT 8.0 s     TURN_TIMEOUT 1.0 s     LIFT_TIMEOUT 1.5 s
+      TURN_SETTLE_DEG 0.5 / 100 ms      DRIVE_SETTLE_IN 1.0 / 100 ms
+      x_tracker_offset -0.02  y_tracker_offset 0.28
+      tolerance 2.5 in        tolerance_heading 30 deg
+      SPROCKET_DIAMETER 4.0 (unmeasured)   LIFT_IN_PER_STAGE 3
+      DRIVE_MAX_RPM 200       start pose (x_int, y_int) = (0, -61)
+
+Controller map in opcontrol (src/main.cpp):
+      A      gripper toggle          X      arm toggle
+      Y      intake run (held)       UP / RIGHT   drive speed 1.0 / 0.4
+      DOWN   reverse direction       LEFT   run the selected auton
+      R1     turn test
+
+
+==============================================================================
+SESSION 2026-10-12  (code review of the uncommitted changes, trace rework)
+==============================================================================
+
+Reviewed everything uncommitted against HEAD (62fa307), plus the new files
+autons.hpp/.cpp and paths/. Each candidate was checked against the code, and
+PROS behaviour was checked by disassembling firmware/libpros.a, not from the
+header docs. Status: FIXED = changed this session, OPEN = still in the code.
+
+------------------------------------------------------------------------------
+1. CHANGES MADE THIS SESSION (src/drive.cpp, drive.hpp, autons.hpp)
+------------------------------------------------------------------------------
+- Removed the near-end boomerang latch (BOOMERANG_CLOSE_IN 7.5, from
+  SESSION 2026-10-11 section 8). Inside 7.5 in it steered for final_heading
+  only, never pivoted, and returned Settled when the robot crossed the line
+  through the point - whatever exit_radius was and however far off sideways.
+  Worked examples: a point 6 in away with final_heading 135 returned Settled
+  on tick 1 without moving; a robot 3 in to the side drove straight past and
+  "settled" 3 in off. Boomerang points now aim at the carrot until within
+  exit_radius again, and the 30/15 pivot gate applies all the way in.
+  The over-turn it was added for (basic far point 1 ending ~146) may come
+  back; see section 3 for better fixes.                 FIXED, NOT TESTED
+- Trace now records EVERY tick (was every 5th, which could hide a one-tick
+  lunge or kick).                                                NOT TESTED
+- Trace is no longer printed at the end of each point. cordon() only stashes
+  samples; dump_cordon_trace() prints the whole path once, called from
+  AutonContext::run after its final stop(). The robot no longer coasts during
+  the dump. Buffer: 1500 samples (30 s) and 32 points per path; overflow
+  prints "# trace buffer full". Output format is unchanged. Brain line 1 lost
+  its "sd:ok/none" part. Builds clean (pros build).              NOT TESTED
+- Reading the trace without an SD card reader: plug the CONTROLLER into the
+  laptop by USB and run "pros terminal > trace.txt" BEFORE the run; the brain
+  talks to it over the radio. Stop pros terminal (Ctrl+C) before
+  "pros upload", or upload fails with "port in use".
+
+------------------------------------------------------------------------------
+2. REVIEW FINDINGS STILL OPEN, most urgent first
+------------------------------------------------------------------------------
+- Port collisions (hardware.hpp:10-17): 18 IMU2 / right drive, 13 AI vision /
+  left drive, 1 YROT / TOP_ROLLER, 6 XROT / BOTTOM_ROLLER. One device of each
+  pair is dead: most likely the whole intake, plus IMU2 and the vision sensor.
+                                                                  CONFIRMED
+- Single-IMU fault latch (odometry.cpp:163). With only IMU1 readable, ONE
+  failed or jumping read sets faulted, and the only reset (line 183) needs
+  both IMUs to agree, so fused_imu_raw() returns NaN until reboot: turn_to
+  SensorFaults, the odometry heading freezes, cordon steers blind until the
+  8 s timeout. HEAD recovered on the next good read.              CONFIRMED
+- Y button (main.cpp:142): intake().run(1000) with no else - nothing ever
+  stops the rollers. 1000 rpm is also above any cartridge's max.  CONFIRMED
+- DOWN (main.cpp:132): get_digital, not get_digital_new_press, so holding it
+  flips reverse every 20 ms; the result depends on press length.  CONFIRMED
+- LEFT / R1 practice autons (main.cpp:146) are live in real matches: no
+  pros::competition::is_connected() check. A stray press resets the pose and
+  drives the path from wherever the robot is.                     CONFIRMED
+- Lift:
+  * Odometry::lift_stage() and Lift::move_to() have no body. Links today only
+    because --gc-sections drops the uncalled Lift::toggle; the first call
+    fails to link (reproduced with a test link).                  CONFIRMED
+  * Height is never zeroed: configure() uses lift_r.reset() (position :=
+    absolute angle) and reset_lift_height() is never called, so height reads
+    0-12.6 in at the bottom and drop() would push into the hard stop.
+                                                                  CONFIRMED
+  * drop() never calls set_lift_stage(0); toggle() advances the stage even
+    on timeout.                                                   CONFIRMED
+- initialize() IMU wait (main.cpp:84) has no timeout. The old reset(true)
+  gave up after 3 s. An IMU stuck "calibrating" freezes the robot for the
+  whole match. (A missing IMU does NOT hang it: is_calibrating() returns
+  false on a wrong or missing device in PROS 4.2.2.)              PLAUSIBLE
+- MAX_LEAD 0.15 -> 0.6 means BOOMERANG_LEAD 0.5 really runs at 0.5 now; the
+  "tuned" comment dates from when it was clamped to 0.15.         PLAUSIBLE
+- Pasted path.jerryio output does not compile: the template and paths/*.txt
+  still emit run_path(robot.drivetrain(), path), which was deleted (use
+  "return ctx.run(path);"). .lead = 30/50 clamps to 0.6. The template's text
+  still says MAX_LEAD 0.9.                                        CONFIRMED
+- Two-IMU fusion (odometry.cpp:181), once IMU2 is on a real port: it flips
+  between mean and single IMU each time they differ by ~5 deg (+-2.5 deg
+  heading steps). Two IMUs reset by the same brownout come back at 0, agree,
+  and are trusted again, so the heading silently jumps.           PLAUSIBLE
+- at_end runs while a stop_at_end=false point is still driving, with no
+  interrupt polling (autons.hpp:101). No path uses at_end yet.    PLAUSIBLE
+- Before matches: CORDON_TRACE = false, and put "basic close" back first in
+  AUTONS.
+
+Lower priority, verified but not urgent:
+- flipper_claw built on CLAW 'A', not FLIPPER_CLAW 'B' (clawtoggle has no
+  callers yet).
+- driver_takeover rests on the stick positions at the LEFT/R1 press: a stick
+  held at the press that then re-centres cuts the auton ~60 ms in.
+- turn_test from the selector with RIGHT/BLUE converts the start pose but not
+  the targets, so the first turn is a no-op.
+- "both yellow (other teams poop)" and "no yellow cuz where poop" are too long
+  for a brain line (llemu cuts at 39 chars), so "cut by <reason>" is lost.
+- basic_close uses pros::delay(500); ctx.wait(0.5) can be interrupted.
+- Comments now wrong: read_imu's "also true on PROS_ERR" (it is false),
+  "reads 0 while calibrating" (get_heading returns +inf),
+  CORDON_HEADING_SMOOTHING's 20 ms staircase rationale, and "same 20 ms
+  cadence" in odometry run().
+- Cleanup: toggle/drop are the same loop pasted twice (put it in move_to);
+  lift state lives in Odometry instead of Lift; LiftConfig is unused;
+  LiftGains repeats PidGains; awp/skills/both_yellow/no_yellow are identical
+  placeholders; read_imu's is_calibrating() call is redundant.
+- Not a fix: swapping the odometry cadence to task_delay_until - it does not
+  sleep after an overrun, which the 1 ms minimum in run() is there to stop.
+
+------------------------------------------------------------------------------
+3. BOOMERANG JERKING - LIKELY CAUSES (from reading cordon(), not yet measured)
+------------------------------------------------------------------------------
+- No slew in cordon: cordon_tuning_ is {1, 0.0} and nothing calls
+  set_cordon_tuning. The pivot gate cuts drive to 0 above 30 deg and brings
+  it back at full PID output below 15 deg in one tick. The "slew ramps drive
+  up" comment there assumes a slew that is off.
+- Derivative kick: the heading PID differentiates the ERROR (pid.cpp:50), so
+  any jump in the target heading spikes the D term (kd 5).
+- Lead now 0.5 instead of 0.15 (see section 2): the aim swings harder.
+- Waypoint handoffs: each leg starts fresh, from ~24% (kp x exit radius)
+  straight up to as much as 100% with a new heading.
+- Read the new per-tick trace: "drive" jumping 0 <-> big = pivot gate; "aim"
+  stepping by tens of degrees = setpoint jumps / lead.
+
+------------------------------------------------------------------------------
+4. TO DO
+------------------------------------------------------------------------------
+- Run a jerky path with pros terminal attached, save the trace, check which
+  cause in section 3 it is.
+- Quick tests: the jerky point at .lead = 0.15; set_cordon_tuning({1, 5.0})
+  on a single stop point.
+- Fix in code: Y stop branch, DOWN new_press, competition check on LEFT/R1,
+  single-IMU latch, IMU wait timeout, lift zero / stage / move_to.
+- Set the real ports for the rollers, IMU2 and AI vision.
+- Note: the CURRENT STATE CHECK above still lists BOOMERANG_CLOSE_IN 7.5;
+  it was removed this session.

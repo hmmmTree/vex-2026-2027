@@ -41,7 +41,8 @@ void Diagnostics::show_drive(int forward, int rotate, double scale) {
 void Diagnostics::show_result(const char* label, MotionResult result,
                               const Interrupts& interrupts) {
     if (result == MotionResult::Interrupted) {
-        pros::lcd::print(7, "%s: cut by %s", label, interrupts.reason().c_str());
+        const std::string reason = interrupts.reason();
+        pros::lcd::print(7, "%s: cut by %s", label, reason.empty() ? "unknown" : reason.c_str());
     } else {
         pros::lcd::print(7, "%s: %s", label, to_string(result));
     }

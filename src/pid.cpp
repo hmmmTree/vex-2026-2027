@@ -31,6 +31,14 @@ void Pid::reset() {
 }
 
 double Pid::update(double error, double dt) {
+    return step(error, has_prev_ ? error - prev_error_ : 0.0, dt);
+}
+
+double Pid::update_with_change(double error, double error_change, double dt) {
+    return step(error, has_prev_ ? error_change : 0.0, dt);
+}
+
+double Pid::step(double error, double error_change, double dt) {
     if (!(dt > 0.0)) dt = LOOP_INTERVAL_S;
 
     // Gains are in per-tick units, the way most VEX tuning guides assume: the
@@ -47,7 +55,7 @@ double Pid::update(double error, double dt) {
     }
 
     for (std::size_t i = smoothing_; i-- > 1;) history_[i] = history_[i - 1];
-    history_[0] = (error - prev_error_) / ticks;
+    history_[0] = error_change / ticks;
 
     derivative_ = 0.0;
     for (std::size_t i = 0; i < smoothing_; i++) derivative_ += history_[i];

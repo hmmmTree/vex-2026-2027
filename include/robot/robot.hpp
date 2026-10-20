@@ -34,8 +34,8 @@ private:
     Hardware          hardware_;
     Intake            intake_;
     Interrupts        interrupts_;
-    Lift              lift_;
     Odometry          odometry_;
+    Lift              lift_;
     Drivetrain        drivetrain_;
     AprilTagLocalizer vision_;
     Diagnostics       diagnostics_;

@@ -1,27 +1,30 @@
 #pragma once
 
 #include "robot/hardware.hpp"
+#include "robot/odometry.hpp"
+#include "robot/interrupt.hpp"
 
 namespace robot {
 
+
 class Lift {
 public:
-    explicit Lift(Hardware& hw);
+    Lift(Hardware& hw, Odometry& odometry);
     
     void up(double speed);
     void down(double speed);
-    void toggle(int stage);
-    void drop();
+    void toggle(LiftGains gains, double timeout);
+    void drop(LiftGains gains, double timeout);
 
     void armtoggle(); // 90 mech via pnumtics
     void clawtoggle();//180 mech via pnumatics
     void grippertoggle(); // gripper via pnumatics
+   
 
-    // Each call moves to the next step: up slowly -> stop -> down slowly -> stop -> repeat
-    void claw_cycle();
+    [[nodiscard]] MotionResult move_to(double inches, LiftGains gains, double timeout_s);
 
 private:
     Hardware& hw_;
-    int       claw_step_ = 0;   // which step claw_cycle() runs next (0 to 3)
+    Odometry& odometry_;
 };
 }

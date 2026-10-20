@@ -1,5 +1,6 @@
 #include "robot/interrupt.hpp"
 
+#include <array>
 #include <cmath>
 #include <utility>
 
@@ -150,12 +151,28 @@ void ScopedInterrupt::release() {
 
 namespace triggers {
 
+// Measured against where the sticks sat when the interrupt was made, not
+// against zero, so stick drift or a thumb resting on a stick does not count.
+// It also has to be held for a few polls, so brushing a stick while pressing
+// the d-pad to start does not cut the auton the instant it begins.
 Interrupts::Predicate driver_takeover(pros::Controller& controller, int deadband) {
-    return [&controller, deadband] {
-        return std::abs(safe_analog(controller, pros::E_CONTROLLER_ANALOG_LEFT_Y))  > deadband
-            || std::abs(safe_analog(controller, pros::E_CONTROLLER_ANALOG_LEFT_X))  > deadband
-            || std::abs(safe_analog(controller, pros::E_CONTROLLER_ANALOG_RIGHT_Y)) > deadband
-            || std::abs(safe_analog(controller, pros::E_CONTROLLER_ANALOG_RIGHT_X)) > deadband;
+    static constexpr int CHANNELS = 4;
+    static constexpr pros::controller_analog_e_t channel[CHANNELS] = {
+        pros::E_CONTROLLER_ANALOG_LEFT_Y,  pros::E_CONTROLLER_ANALOG_LEFT_X,
+        pros::E_CONTROLLER_ANALOG_RIGHT_Y, pros::E_CONTROLLER_ANALOG_RIGHT_X,
+    };
+    static constexpr int HELD_POLLS = 3;
+
+    std::array<int, CHANNELS> rest{};
+    for (int i = 0; i < CHANNELS; i++) rest[i] = safe_analog(controller, channel[i]);
+
+    return [&controller, deadband, rest, held = 0]() mutable {
+        bool moved = false;
+        for (int i = 0; i < CHANNELS; i++) {
+            if (std::abs(safe_analog(controller, channel[i]) - rest[i]) > deadband) moved = true;
+        }
+        held = moved ? held + 1 : 0;
+        return held >= HELD_POLLS;
     };
 }
 

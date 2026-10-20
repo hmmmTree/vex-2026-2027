@@ -2,6 +2,8 @@
 
 #include "pros/misc.h"
 #include "pros/rtos.hpp"
+#include "robot/autons.hpp"
+#include "robot/lift.hpp"
 #include "robot/robot.hpp"
 
 #include <cstddef>
@@ -18,42 +20,14 @@ constexpr double CM_TO_IN = 1.0 / 2.54;
 constexpr double LEG_CM   = 10.0;
 //constexpr double LEG_IN   = LEG_CM * CM_TO_IN;
 
-// {kp, ki, kd}
-constexpr PidGains DRIVE_GAINS{4.0, 0.0, 4.0}; //tuned im gonna kill u if u touch this
-
-// as it did before.
-constexpr PidGains CORDON_TURN_GAINS{0.6, 0.0, 5}; //tuned im gonna kill u if u touch this
-constexpr PidGains TURN_GAINS       {0.6, 0.0, 1.25}; //tuned im gonna kill u if u touch this
-
-constexpr PidGains HEADING_HOLD_GAINS{0.0, 0.0, 0.0};
-
-// A pass-through point hands off to the next leg as soon as the robot is this
-// close, so the distance PID never reaches the bottom of its ramp: speed at the
-// handoff is roughly drive kp x this radius. It is also how far the robot is
-// allowed to miss the point by, so bigger is not free.
-constexpr double WAYPOINT_RADIUS = 6.0;
-constexpr double FINAL_RADIUS    = 2.0;
-
-constexpr double BOOMERANG_LEAD = 0.5; //tuned im gonna kill u if u touch this
-
-constexpr double DRIVE_TIMEOUT = 8.0;
-constexpr double TURN_TIMEOUT  = 1.0;
+// Gains, radii and timeouts live in robot/autons.hpp so the paths can use them too.
 
 constexpr double MACRO_DISTANCE_IN = 12.0;
 
 constexpr double MOTOR_TEMP_LIMIT_C = 55.0;
 
-template <std::size_t N>
-MotionResult run_path(Drivetrain& drivetrain, const CordonRequest (&points)[N]) {
-    MotionResult result = MotionResult::Settled;
-    for (std::size_t i = 0; i < N; i++) {
-        result = drivetrain.cordon(points[i]);
-        if (result != MotionResult::Settled) break;
-    }
-    return result;
-}
-
 void run_interruptible_macro() {
+
     Robot&      robot      = bot();
     Interrupts& interrupts = robot.interrupts();
 
@@ -69,36 +43,11 @@ void run_interruptible_macro() {
     robot.diagnostics().show_result("macro", result, interrupts);
 }
 
-}
-
-void initialize() {
-    pros::lcd::initialize();
-
-    Robot& robot = bot();
-
-    robot.hardware().configure();
-    robot.hardware().inertial.reset(true);
-    pros::delay(250);
-
-    
-
-    robot.odometry().start();
-    pros::delay(750);
-
-    robot.odometry().set_pose(x_int, y_int, START_HEADING, -1.0);
-    robot.vision().initial_fix(START_HEADING, 15);
-
-
-    
-}
-
-void disabled() {
-}
-
-void competition_initialize() {
-}
-
-void autonomous() {
+// Runs whatever the brain-screen selector shows, with the same safety cut-offs
+// as a match. Shared by autonomous() and the controller's LEFT arrow; R1 passes
+// the turn test instead.
+void run_auton(MotionResult (*routine)(Robot&) = run_selected_auton,
+               const char* name = nullptr) {
     Robot&      robot      = bot();
     Interrupts& interrupts = robot.interrupts();
 
@@ -114,165 +63,55 @@ void autonomous() {
     ScopedInterrupt takeover(interrupts, "driver takeover",
                              triggers::driver_takeover(robot.hardware().master));
 
-/*
-const MotionResult turn_result =
-        robot.drivetrain().turn_to(20, TURN_GAINS, TURN_TIMEOUT);
-        pros::delay(500);
-    robot.diagnostics().show_result("auton", turn_result, interrupts);
-//*/
-
-
-
-// ===== src/main.cpp, in the anonymous namespace =====================
-constexpr PidGains DRIVE_GAINS      {6.00, 0.00, 4.00};
-constexpr PidGains CORDON_TURN_GAINS{0.60, 0.00, 5.00};
-constexpr PidGains TURN_GAINS       {0.60, 0.00, 1.25};
-
-
-// ===== src/main.cpp, in initialize() ================================
-    robot.odometry().set_pose(0.0, -61.0, 0.0, -1.0);
-
-// ===== src/main.cpp, in autonomous() ================================
-    const CordonRequest path[] = {
-        
-        {
-            .x                = 0,
-            .y                = -50.2,
-            .drive_gains      = DRIVE_GAINS,
-            .turn_gains       = CORDON_TURN_GAINS,
-            .final_turn_gains = TURN_GAINS,
-            .drive_timeout    = DRIVE_TIMEOUT,
-            .exit_radius      = 2,
-            .stop_at_end      = true,   // next point reverses; don't carry forward momentum into it
-            .turn_at_end      = false,
-            .final_heading    = 90,
-            .lead             = BOOMERANG_LEAD,
-        },
-        /*
-        {
-            .x                = 0,
-            .y                = -48,
-            .drive_gains      = DRIVE_GAINS,
-            .turn_gains       = CORDON_TURN_GAINS,
-            .final_turn_gains = TURN_GAINS,
-            .drive_timeout    = DRIVE_TIMEOUT,
-            .exit_radius      = 2.50,
-            .stop_at_end      = false,
-            .turn_at_end      = false,
-            .final_heading    = 135.0,
-            .lead             = BOOMERANG_LEAD,
-            .reverse          = true,
-        },
-        */
-        ///*
-        {
-            .x                = -10.5,
-            .y                = -61.2,
-            .drive_gains      = DRIVE_GAINS,
-            .turn_gains       = CORDON_TURN_GAINS,
-            .final_turn_gains = TURN_GAINS,
-            .drive_timeout    = DRIVE_TIMEOUT,
-            .exit_radius      = 2,
-            .stop_at_end      = true,
-            .turn_at_end      = false,
-            .final_heading    = 45.0,
-            .lead             = BOOMERANG_LEAD,
-            .reverse          = true,
-        },
-    };
-
-    const MotionResult result = run_path(robot.drivetrain(), path);
+    // Pick alliance / yellow position / path on the brain screen before the
+    // match. The paths themselves are in src/autons.cpp.
+    const MotionResult result = routine(robot);
     robot.drivetrain().stop();
-    robot.diagnostics().show_result("auton", result, interrupts);
+    robot.diagnostics().show_result(name ? name : selected_auton_name(), result, interrupts);
+}
 
-    pros::delay(500);
-        
-    const CordonRequest path2[] = {
-        
-        {
-            .x                = -17.0,
-            .y                = -54.6,
-            .drive_gains      = DRIVE_GAINS,
-            .turn_gains       = CORDON_TURN_GAINS,
-            .final_turn_gains = TURN_GAINS,
-            .drive_timeout    = DRIVE_TIMEOUT,
-            .exit_radius      = 1.00,
-            .stop_at_end      = true,
-            .turn_at_end      = true,
-            .final_heading    = -65.0,
-            .lead             = BOOMERANG_LEAD,
-        },
-        /*
-        {
-            .x                = 16.3,
-            .y                = -30.9,
-            .drive_gains      = DRIVE_GAINS,
-            .turn_gains       = CORDON_TURN_GAINS,
-            .final_turn_gains = TURN_GAINS,
-            .drive_timeout    = DRIVE_TIMEOUT,
-            .exit_radius      = FINAL_RADIUS,
-            .stop_at_end      = false,
-            .turn_at_end      = false,
-            .final_heading    = 200.0,
-            .lead             = BOOMERANG_LEAD,
-            .reverse          = true,
-        },
-        {
-            .x                = -12.1,
-            .y                = -47.0,
-            .drive_gains      = DRIVE_GAINS,
-            .turn_gains       = CORDON_TURN_GAINS,
-            .final_turn_gains = TURN_GAINS,
-            .drive_timeout    = DRIVE_TIMEOUT,
-            .exit_radius      = 1.00,
-            .stop_at_end      = true,
-            .turn_at_end      = false,
-            .final_heading    = 270.0,
-            .lead             = BOOMERANG_LEAD,
-        },
-        {
-            .x                = -19.1,
-            .y                = -27.5,
-            .drive_gains      = DRIVE_GAINS,
-            .turn_gains       = CORDON_TURN_GAINS,
-            .final_turn_gains = TURN_GAINS,
-            .drive_timeout    = DRIVE_TIMEOUT,
-            .exit_radius      = FINAL_RADIUS,
-            .stop_at_end      = true,
-            .turn_at_end      = false,
-            .final_heading    = 135.0,
-            .lead             = BOOMERANG_LEAD,
-            .reverse          = true,
-        },
-        {
-            .x                = -16.4,
-            .y                = -40.1,
-            .drive_gains      = DRIVE_GAINS,
-            .turn_gains       = CORDON_TURN_GAINS,
-            .final_turn_gains = TURN_GAINS,
-            .drive_timeout    = DRIVE_TIMEOUT,
-            .exit_radius      = 1.00,
-            .stop_at_end      = true,
-            .turn_at_end      = false,
-            .final_heading    = 225.0,
-            .lead             = BOOMERANG_LEAD,
-        },
-        */
-    };
+}
+
+void initialize() {
+    pros::lcd::initialize();
+
+    Robot& robot = bot();
+
+    robot.hardware().configure();
+    // Start both calibrating, then wait for both, so the second does not add
+    // another ~2 s on top of the first.
+    robot.hardware().inertial1.reset(false);
+    robot.hardware().inertial2.reset(false);
+    double timeout = 0;
+    while (robot.hardware().inertial1.is_calibrating() == 1 ||
+           robot.hardware().inertial2.is_calibrating() == 1 || timeout < 3000) {
+        pros::delay(10);
+        timeout += 10;
+    }
+    pros::delay(250);
+
+    
+
+    robot.odometry().start();
+    pros::delay(750);
+
+    robot.odometry().set_pose(x_int, y_int, START_HEADING, -1.0);
+    robot.vision().initial_fix(START_HEADING, 15);
+
+    auton_selector_start();
 
 
+    
+}
 
-    const MotionResult result2 = run_path(robot.drivetrain(), path2);
-    robot.drivetrain().stop();
-    robot.diagnostics().show_result("auton", result2, interrupts);
-  
-/*   
-    const MotionResult result =
-        robot.drivetrain().drive_distance(24, DRIVE_GAINS, HEADING_HOLD_GAINS, DRIVE_TIMEOUT);
-        pros::delay(500);
-        robot.drivetrain().turn_to(90, TURN_GAINS, TURN_TIMEOUT);
-    robot.diagnostics().show_result("auton", result, interrupts);
-*/    
+void disabled() {
+}
+
+void competition_initialize() {
+}
+
+void autonomous() {
+    run_auton();
 }
 
 void opcontrol() {
@@ -291,26 +130,42 @@ void opcontrol() {
 
         drivetrain.arcade(forward, rotate, speed);
 
-        if (master.get_digital(pros::E_CONTROLLER_DIGITAL_UP))    speed = 1.0;
-        if (master.get_digital(pros::E_CONTROLLER_DIGITAL_RIGHT)) speed = 0.4;
-        if (master.get_digital(pros::E_CONTROLLER_DIGITAL_DOWN)) speed = speed*-1.0;
+        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_UP))   robot.lift().up(1000);
+        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_LEFT)) robot.lift().down(1000);
+        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_DOWN)) if (speed == 1) speed = 0.5; else speed = 1.0;
+        if (master.get_digital(pros::E_CONTROLLER_DIGITAL_RIGHT)) robot.lift().clawtoggle();
 
-        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_B)) {
-            drivetrain.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_B)) drivetrain.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+        if(master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_A)) robot.lift().drop(LIFT_GAINS, 2);
+        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_X)) robot.lift().toggle(LIFT_GAINS, 2);
+        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_Y)) robot.intake().toggle();
+
+        
+        if (master.get_digital(pros::E_CONTROLLER_DIGITAL_L1)) robot.intake().run(1000);
+        if (master.get_digital(pros::E_CONTROLLER_DIGITAL_L2)) robot.intake().run(-1000);
+        if (master.get_digital(pros::E_CONTROLLER_DIGITAL_R1)) robot.lift().grippertoggle();
+        if (master.get_digital(pros::E_CONTROLLER_DIGITAL_R2)) robot.lift().armtoggle();
+
+        /*
+        // Practice without a competition switch: runs the selected auton.
+        // Touching a stick stops it and hands control back.
+        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_LEFT)) {
+            run_auton();
+            drivetrain.set_brake_mode(pros::E_MOTOR_BRAKE_COAST);
         }
-
-        if(master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_A)) robot.lift().grippertoggle();
-
-        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_X)) robot.lift().armtoggle();
-
+        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_R1)) {
+            run_auton(run_turn_test, "turn test");
+            drivetrain.set_brake_mode(pros::E_MOTOR_BRAKE_COAST);
+        }
+*/
 
         
 
         if (++diag_counter >= 12) {
             diag_counter = 0;
-            robot.diagnostics().show_drive(forward, rotate, speed);
+            if (!auton_screen_held()) robot.diagnostics().show_drive(forward, rotate, speed);
         }
-        
+
 
         pros::delay(LOOP_INTERVAL_MS);
     }
